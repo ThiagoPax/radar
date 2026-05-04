@@ -223,20 +223,18 @@ function atualizarFormulasHistoricoGE_(sheet) {
     batchSetFormulasSafe_(sheet.getRange(3, 2, 60, 2), bcFormulas);
 
     var row63Formulas = [];
-    var row63Cols = [];
     for (var i = 0; i < audCols.length; i++) {
         var colL = columnToLetter_(audCols[i]);
-        row63Formulas.push("=(SOMA(" + colL + "3:" + colL + "62))/60");
-        row63Cols.push(audCols[i]);
+        row63Formulas.push(["=(SOMA(" + colL + "3:" + colL + "62))/60"]);
     }
-    for (var i = 0; i < row63Cols.length; i++) {
-        sheet.getRange(63, row63Cols[i]).setValue(row63Formulas[i]);
-        sheet.getRange(63, row63Cols[i]).setNumberFormat("0.00");
+    batchSetFormulasSafe_(sheet.getRange(63, 4, row63Formulas.length, 1), row63Formulas);
+    for (var i = 0; i < audCols.length; i++) {
+        sheet.getRange(63, audCols[i]).setNumberFormat("0.00");
     }
 
-    sheet.getRange(63, 2).setValue("=(SOMA(B3:B62))/60");
+    setFormulaSafe_(sheet.getRange(63, 2), "=(SOMA(B3:B62))/60");
     sheet.getRange(63, 2).setNumberFormat("0.00");
-    sheet.getRange(63, 3).setValue('=SE(OU(B63="";B63=0;D63="");"";D63/B63-1)');
+    setFormulaSafe_(sheet.getRange(63, 3), '=SE(OU(B63="";B63=0;D63="");"";D63/B63-1)');
     sheet.getRange(63, 3).setNumberFormat("0.0%");
 
     SpreadsheetApp.flush();
@@ -253,10 +251,55 @@ function garantirCamposHistoricoGE_() {
     var sheet = SpreadsheetApp.getActive().getSheetByName(CFG.GE_OUT_HISTORICO);
     if (!sheet) return;
     var maxRows = sheet.getMaxRows();
-    if (maxRows < 67) sheet.insertRowsAfter(maxRows, 67 - maxRows);
+    if (maxRows < 85) sheet.insertRowsAfter(maxRows, 85 - maxRows);
     var labels = [["MÉDIA"], ["COMENT. 1"], ["COMENT. 2"], ["MÉDIA SEM."], ["% vs ANT."]];
     sheet.getRange(63, 1, 5, 1).setValues(labels);
     sheet.getRange(63, 1, 5, 1).setFontWeight("bold").setFontSize(8).setFontColor("#666666");
+    preencherBlocoA66E85HistoricoGE_(sheet);
+}
+
+function preencherBlocoA66E85HistoricoGE_(sheet) {
+    var values = [
+        ["SEMANA 16", 0.7656, -0.15446915034604625, "", ""],
+        ["SEMANA 15", 0.9054666666666666, -0.0448663853727147, "", ""],
+        ["SEMANA 14", 0.9480000000000002, 0.4696914888119479, "", ""],
+        ["SEMANA 13", 0.6450333333333334, 0.19303329223181276, "", ""],
+        ["SEMANA 12", 0.5406666666666666, -0.13965947064127737, "", ""],
+        ["SEMANA 11", 0.6284333333333334, 0.044140451927337176, "", ""],
+        ["SEMANA 10", 0.6018666666666668, -0.2671086288487192, "", ""],
+        ["SEMANA 09", 0.8212222033958586, -0.03736701043739454, "", ""],
+        ["SEMANA 08", 0.8530999999999999, 0.31026194206548707, "", ""],
+        ["SEMANA 07", 0.6510911846032705, -0.12464212879366665, "", ""],
+        ["SEMANA 06", 0.7437999999999998, 0.07382098171318519, "", ""],
+        ["SEMANA 05", 0.6926666666666669, 0.12318253067401796, "", ""],
+        ["SEMANA 04", 0.6167, 0.0718382480736921, "", ""],
+        ["SEMANA 03", 0.5753666666666667, -0.22752293577981664, "", ""],
+        ["SEMANA 02", 0.7448333333333335, 0.23767586130497387, "", ""],
+        ["SEMANA 01", 0.6018000000000001, "-", "MENSAL", ""],
+        ["ABRIL", 0.8388703703703704, 0.3013282650333833, 0.7, 0.19838624338624355],
+        ["MARÇO", 0.6446262583475436, -0.12315367383640541, 0.71, -0.09207569246824843],
+        ["FEVEREIRO", 0.7351644628174843, 0.15833215869143125, 0.63, 0.16692771875791146],
+        ["JANEIRO", 0.6346750000000001, "-", 0.56, 0.13334821428571431]
+    ];
+    var target = sheet.getRange(66, 1, values.length, 5);
+    target.setValues(values);
+
+    // Aparência: seguir padrão visual já existente na aba (bloco vizinho acima)
+    var model = sheet.getRange(63, 1, 1, 5);
+    model.copyTo(target, SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
+
+    target.setVerticalAlignment("middle");
+    sheet.getRange(66, 1, values.length, 1).setHorizontalAlignment("left");
+    sheet.getRange(66, 2, values.length, 4).setHorizontalAlignment("center");
+
+    // Formatos numéricos conforme bloco-modelo (decimais e percentuais)
+    sheet.getRange(66, 2, values.length, 1).setNumberFormat("0.00");
+    sheet.getRange(66, 3, values.length, 1).setNumberFormat("0.00%");
+    sheet.getRange(82, 4, 4, 1).setNumberFormat("0.00");
+    sheet.getRange(82, 5, 4, 1).setNumberFormat("0.00%");
+
+    // Bordas para manter o padrão tabular do histórico
+    target.setBorder(true, true, true, true, true, true);
 }
 
 // --- Média por semana GE ---
@@ -855,7 +898,8 @@ function atualizarCalibragemGE_(sheet) {
     var GYl = columnToLetter_(calibStartCol + 6);
 
     // A1 e B1
-    sheet.getRange(1, 1).setValue("=MÉDIA(D3:D62)").setNumberFormat("0.00");
+    setFormulaSafe_(sheet.getRange(1, 1), "=D63");
+    sheet.getRange(1, 1).setNumberFormat("0.00");
     sheet.getRange(1, 2).setValue("PREV");
 
     // Cabeçalhos row 1
@@ -871,12 +915,8 @@ function atualizarCalibragemGE_(sheet) {
     var audColsHist = audCols.filter(function(c) { return c !== 4; });
 
     // C1 = previsão dinâmica: parcial_atual × (histórico_total / histórico_parcial_21min)
-    if (audColsHist.length > 0) {
-        var lastHistL = columnToLetter_(audColsHist[audColsHist.length - 1]);
-        sheet.getRange(1, 3)
-            .setValue('=MÉDIA(D3:D23)*MÉDIA(SEERRO(FILTER(H63:' + lastHistL + '63;MOD(COL(H63:' + lastHistL + '63)-COL(H63);4)=0);""))/MÉDIA(SEERRO(FILTER(H3:' + lastHistL + '23;MOD(COL(H3:' + lastHistL + '23)-COL(H3);4)=0);""))')
-            .setNumberFormat("0.00");
-    }
+    setFormulaSafe_(sheet.getRange(1, 3), '=MÉDIA(D3:D23)*MÉDIA(SEERRO(FILTER(H63:LH63;MOD(COL(H63:LH63)-COL(H63);4)=0);""))/MÉDIA(SEERRO(FILTER(H3:LH23;MOD(COL(H3:LH23)-COL(H3);4)=0);""))');
+    sheet.getRange(1, 3).setNumberFormat("0.00");
 
     var gsF = [], gtF = [], guF = [], gvF = [], gwF = [], gxF = [], gyF = [];
 
