@@ -223,20 +223,18 @@ function atualizarFormulasHistoricoGE_(sheet) {
     batchSetFormulasSafe_(sheet.getRange(3, 2, 60, 2), bcFormulas);
 
     var row63Formulas = [];
-    var row63Cols = [];
     for (var i = 0; i < audCols.length; i++) {
         var colL = columnToLetter_(audCols[i]);
-        row63Formulas.push("=(SOMA(" + colL + "3:" + colL + "62))/60");
-        row63Cols.push(audCols[i]);
+        row63Formulas.push(["=(SOMA(" + colL + "3:" + colL + "62))/60"]);
     }
-    for (var i = 0; i < row63Cols.length; i++) {
-        sheet.getRange(63, row63Cols[i]).setValue(row63Formulas[i]);
-        sheet.getRange(63, row63Cols[i]).setNumberFormat("0.00");
+    batchSetFormulasSafe_(sheet.getRange(63, 4, row63Formulas.length, 1), row63Formulas);
+    for (var i = 0; i < audCols.length; i++) {
+        sheet.getRange(63, audCols[i]).setNumberFormat("0.00");
     }
 
-    sheet.getRange(63, 2).setValue("=(SOMA(B3:B62))/60");
+    setFormulaSafe_(sheet.getRange(63, 2), "=(SOMA(B3:B62))/60");
     sheet.getRange(63, 2).setNumberFormat("0.00");
-    sheet.getRange(63, 3).setValue('=SE(OU(B63="";B63=0;D63="");"";D63/B63-1)');
+    setFormulaSafe_(sheet.getRange(63, 3), '=SE(OU(B63="";B63=0;D63="");"";D63/B63-1)');
     sheet.getRange(63, 3).setNumberFormat("0.0%");
 
     SpreadsheetApp.flush();
