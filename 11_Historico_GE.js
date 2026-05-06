@@ -1092,6 +1092,7 @@ function adicionarNovoDiaManualGE() {
         ui.alert("❌ Formato inválido", "Use dd/mm/aaaa", ui.ButtonSet.OK);
         return;
     }
+    var programDate = new Date(parseInt(match[3], 10), parseInt(match[2], 10) - 1, parseInt(match[1], 10));
 
     var lastCol = sheet.getLastColumn();
     var numPrograms = Math.floor((lastCol - 3) / 4);
@@ -1172,8 +1173,39 @@ function adicionarNovoDiaManualGE() {
 
     Utilities.sleep(500);
 
-    sheet.getRange(63, 4, 1, 4).setBackground("#F5B7B1");
-    sheet.getRange(63, 4).setNumberFormat("0.00").setFontWeight("bold");
+    // Bloco novo D63:G65 espelha o bloco anterior H63:K65
+    sheet.getRange(63, 8, 3, 4).copyTo(sheet.getRange(63, 4, 3, 4), SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
+
+    // Textos fixos do bloco novo
+    sheet.getRange(64, 4, 2, 1).setValues([["COMENTARISTA 1"], ["COMENTARISTA 2"]]);
+    sheet.getRange(64, 6).setValue("DIFERENÇA");
+
+    // Mediana por dia útil (terça=3ª, quarta=4ª, quinta=5ª, sexta=6ª)
+    var weekday = programDate.getDay();
+    var medianaLabel = {
+        2: "MEDIANA 3ª",
+        3: "MEDIANA 4ª",
+        4: "MEDIANA 5ª",
+        5: "MEDIANA 6ª"
+    } [weekday] || "MEDIANA";
+    sheet.getRange(64, 5).setValue(medianaLabel);
+
+    var audColsForMedian = getAudColsGE_(sheet).filter(function(c) { return c !== 4; });
+    var medianRefs = [];
+    for (var iMedian = 0; iMedian < audColsForMedian.length; iMedian++) {
+        var cMedian = audColsForMedian[iMedian];
+        var h = sheet.getRange(1, cMedian).getValue();
+        var dMedian = h instanceof Date ? h : parseDateStr_(h);
+        if (!dMedian) continue;
+        if (dMedian.getDay() === weekday) medianRefs.push(columnToLetter_(cMedian) + "63");
+    }
+    if (medianRefs.length > 0) {
+        setFormulaSafe_(sheet.getRange(63, 5), "=MED(" + medianRefs.join(";") + ")");
+    } else {
+        sheet.getRange(63, 5).setValue("");
+    }
+    setFormulaSafe_(sheet.getRange(63, 6), "=(D63/E63)-1");
+    sheet.getRange(63, 6).setNumberFormat("+0.0%;-0.0%");
 
     garantirCamposHistoricoGE_();
     atualizarMediaSemanaGE_();
