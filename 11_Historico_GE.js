@@ -1191,10 +1191,11 @@ function adicionarNovoDiaManualGE() {
     sheet.getRange(64, 5).setValue(medianaLabel);
 
     var audColsForMedian = getAudColsGE_(sheet).filter(function(c) { return c !== 4; });
+    var row1Values = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
     var medianRefs = [];
     for (var iMedian = 0; iMedian < audColsForMedian.length; iMedian++) {
         var cMedian = audColsForMedian[iMedian];
-        var h = sheet.getRange(1, cMedian).getValue();
+        var h = row1Values[cMedian - 1];
         var dMedian = h instanceof Date ? h : parseDateStr_(h);
         if (!dMedian) continue;
         if (dMedian.getDay() === weekday) medianRefs.push(columnToLetter_(cMedian) + "63");
@@ -1206,6 +1207,29 @@ function adicionarNovoDiaManualGE() {
     }
     setFormulaSafe_(sheet.getRange(63, 6), "=(D63/E63)-1");
     sheet.getRange(63, 6).setNumberFormat("+0.0%;-0.0%");
+
+    // Herdar formatação condicional da coluna equivalente (&/MIN) do bloco anterior: I3:I62 -> E3:E62
+    var rules = sheet.getConditionalFormatRules();
+    var clonedRules = [];
+    var sourceCol = 9, targetCol = 5, startRow = 3, numRows = 60;
+    for (var rIdx = 0; rIdx < rules.length; rIdx++) {
+        var rule = rules[rIdx];
+        var ranges = rule.getRanges();
+        var hasSource = false, hasTarget = false;
+        for (var rgIdx = 0; rgIdx < ranges.length; rgIdx++) {
+            var rg = ranges[rgIdx];
+            if (rg.getColumn() === sourceCol && rg.getRow() === startRow && rg.getNumColumns() === 1 && rg.getNumRows() === numRows) hasSource = true;
+            if (rg.getColumn() === targetCol && rg.getRow() === startRow && rg.getNumColumns() === 1 && rg.getNumRows() === numRows) hasTarget = true;
+        }
+        if (hasSource && !hasTarget) {
+            var newRanges = ranges.slice();
+            newRanges.push(sheet.getRange(startRow, targetCol, numRows, 1));
+            clonedRules.push(rule.copy().setRanges(newRanges).build());
+        } else {
+            clonedRules.push(rule);
+        }
+    }
+    sheet.setConditionalFormatRules(clonedRules);
 
     garantirCamposHistoricoGE_();
     atualizarMediaSemanaGE_();
