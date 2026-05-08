@@ -1212,6 +1212,7 @@ function adicionarNovoDiaManualGE() {
     var rules = sheet.getConditionalFormatRules();
     var clonedRules = [];
     var sourceCol = 9, targetCol = 5, startRow = 3, numRows = 60;
+    var shouldUpdateRules = false;
     for (var rIdx = 0; rIdx < rules.length; rIdx++) {
         var rule = rules[rIdx];
         var ranges = rule.getRanges();
@@ -1225,11 +1226,12 @@ function adicionarNovoDiaManualGE() {
             var newRanges = ranges.slice();
             newRanges.push(sheet.getRange(startRow, targetCol, numRows, 1));
             clonedRules.push(rule.copy().setRanges(newRanges).build());
+            shouldUpdateRules = true;
         } else {
             clonedRules.push(rule);
         }
     }
-    sheet.setConditionalFormatRules(clonedRules);
+    if (shouldUpdateRules) sheet.setConditionalFormatRules(clonedRules);
 
     garantirCamposHistoricoGE_();
     atualizarMediaSemanaGE_();
