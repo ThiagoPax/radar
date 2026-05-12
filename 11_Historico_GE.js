@@ -259,42 +259,18 @@ function garantirCamposHistoricoGE_() {
 }
 
 function preencherBlocoA66E85HistoricoGE_(sheet) {
-    // Área-alvo oficial: A66:NT89 (layout/fórmulas conforme docs/ge-historico/*_A66_NT89*)
-    var fullTarget = sheet.getRange("A66:NT89");
-    fullTarget.clearContent();
-    fullTarget.clearFormat();
-    fullTarget.clearDataValidations();
-    fullTarget.clearNote();
-
-    var fixedValues = [
-        ["SEMANA 19", "", "", "", ""],
-        ["SEMANA 18", "", "", "", ""],
-        ["SEMANA 17", "", "", "", ""],
-        ["SEMANA 16", "", "", "", ""],
-        ["SEMANA 15", "", "", "", ""],
-        ["SEMANA 14", "", "", "", ""],
-        ["SEMANA 13", "", "", "", ""],
-        ["SEMANA 12", "", "", "", ""],
-        ["SEMANA 11", "", "", "", ""],
-        ["SEMANA 10", "", "", "", ""],
-        ["SEMANA 09", "", "", "", ""],
-        ["SEMANA 08", "", "", "", ""],
-        ["SEMANA 07", "", "", "", ""],
-        ["SEMANA 06", "", "", "", ""],
-        ["SEMANA 05", "", "", "", ""],
-        ["SEMANA 04", "", "", "", ""],
-        ["SEMANA 03", "", "", "", ""],
-        ["SEMANA 02", "", "", "", ""],
-        ["SEMANA 01", "", "-", "MENSAL", ""],
-        ["MAIO", "", "", 0.65, ""],
-        ["ABRIL", "", "", 0.70, ""],
-        ["MARÇO", "", "", 0.71, ""],
-        ["FEVEREIRO", "", "", 0.63, ""],
-        ["JANEIRO", "", "-", 0.56, ""]
+    // Merge incremental em A66:E89: preservar estado atual e ajustar só o necessário
+    var labelsA = [
+        ["SEMANA 19"], ["SEMANA 18"], ["SEMANA 17"], ["SEMANA 16"], ["SEMANA 15"], ["SEMANA 14"],
+        ["SEMANA 13"], ["SEMANA 12"], ["SEMANA 11"], ["SEMANA 10"], ["SEMANA 09"], ["SEMANA 08"],
+        ["SEMANA 07"], ["SEMANA 06"], ["SEMANA 05"], ["SEMANA 04"], ["SEMANA 03"], ["SEMANA 02"],
+        ["SEMANA 01"], ["MAIO"], ["ABRIL"], ["MARÇO"], ["FEVEREIRO"], ["JANEIRO"]
     ];
-
-    var panel = sheet.getRange("A66:E89");
-    panel.setValues(fixedValues);
+    sheet.getRange("A66:A89").setValues(labelsA);
+    sheet.getRange("D84").setValue("MENSAL");
+    sheet.getRange("D85:D89").setValues([[0.65], [0.70], [0.71], [0.63], [0.56]]);
+    sheet.getRange("C84").setValue("-");
+    sheet.getRange("C89").setValue("-");
 
     // Fórmulas dinâmicas oficiais (docs/ge-historico/formulas_A66_NT89.md)
     sheet.getRange("B66").setFormula("=D63");
@@ -328,9 +304,7 @@ function preencherBlocoA66E85HistoricoGE_(sheet) {
     sheet.getRange("B88").setFormula("=MÉDIA(JX63;JT63;JP63;JL63;JH63;JD63;IZ63;IV63;IR63;IN63;IJ63;IF63;IB63;HX63;HT63;HP63;HL63;HH63;HD63;GZ63)");
     sheet.getRange("B89").setFormula("=MÉDIA(MZ63;MV63;MR63;MN63;MJ63;MF63;MB63;LX63;LT63;LP63;LL63;LH63;LD63;KZ63;KV63;KR63;KN63;KJ63;KF63;KB63)");
 
-    // Aparência: base no estilo do bloco vizinho e alinhamento do modelo oficial
-    var model = sheet.getRange(63, 1, 1, 5);
-    model.copyTo(panel, SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
+    var panel = sheet.getRange("A66:E89");
     panel.setVerticalAlignment("middle");
     sheet.getRange("A66:A89").setHorizontalAlignment("left");
     sheet.getRange("B66:E89").setHorizontalAlignment("center");
@@ -341,6 +315,7 @@ function preencherBlocoA66E85HistoricoGE_(sheet) {
     sheet.getRange("D85:D89").setNumberFormat("0.00");
     sheet.getRange("E85:E89").setNumberFormat("0.00%");
 
+    // Mantém borda externa e grade sem limpar estilos existentes fora do necessário
     panel.setBorder(true, true, true, true, true, true);
 }
 
