@@ -251,7 +251,7 @@ function garantirCamposHistoricoGE_() {
     var sheet = SpreadsheetApp.getActive().getSheetByName(CFG.GE_OUT_HISTORICO);
     if (!sheet) return;
     var maxRows = sheet.getMaxRows();
-    if (maxRows < 85) sheet.insertRowsAfter(maxRows, 85 - maxRows);
+    if (maxRows < 89) sheet.insertRowsAfter(maxRows, 89 - maxRows);
     var labels = [["MÉDIA"], ["COMENT. 1"], ["COMENT. 2"], ["MÉDIA SEM."], ["% vs ANT."]];
     sheet.getRange(63, 1, 5, 1).setValues(labels);
     sheet.getRange(63, 1, 5, 1).setFontWeight("bold").setFontSize(8).setFontColor("#666666");
@@ -259,47 +259,89 @@ function garantirCamposHistoricoGE_() {
 }
 
 function preencherBlocoA66E85HistoricoGE_(sheet) {
-    var values = [
-        ["SEMANA 16", 0.7656, -0.15446915034604625, "", ""],
-        ["SEMANA 15", 0.9054666666666666, -0.0448663853727147, "", ""],
-        ["SEMANA 14", 0.9480000000000002, 0.4696914888119479, "", ""],
-        ["SEMANA 13", 0.6450333333333334, 0.19303329223181276, "", ""],
-        ["SEMANA 12", 0.5406666666666666, -0.13965947064127737, "", ""],
-        ["SEMANA 11", 0.6284333333333334, 0.044140451927337176, "", ""],
-        ["SEMANA 10", 0.6018666666666668, -0.2671086288487192, "", ""],
-        ["SEMANA 09", 0.8212222033958586, -0.03736701043739454, "", ""],
-        ["SEMANA 08", 0.8530999999999999, 0.31026194206548707, "", ""],
-        ["SEMANA 07", 0.6510911846032705, -0.12464212879366665, "", ""],
-        ["SEMANA 06", 0.7437999999999998, 0.07382098171318519, "", ""],
-        ["SEMANA 05", 0.6926666666666669, 0.12318253067401796, "", ""],
-        ["SEMANA 04", 0.6167, 0.0718382480736921, "", ""],
-        ["SEMANA 03", 0.5753666666666667, -0.22752293577981664, "", ""],
-        ["SEMANA 02", 0.7448333333333335, 0.23767586130497387, "", ""],
-        ["SEMANA 01", 0.6018000000000001, "-", "MENSAL", ""],
-        ["ABRIL", 0.8388703703703704, 0.3013282650333833, 0.7, 0.19838624338624355],
-        ["MARÇO", 0.6446262583475436, -0.12315367383640541, 0.71, -0.09207569246824843],
-        ["FEVEREIRO", 0.7351644628174843, 0.15833215869143125, 0.63, 0.16692771875791146],
-        ["JANEIRO", 0.6346750000000001, "-", 0.56, 0.13334821428571431]
+    // Área-alvo oficial: A66:NT89 (layout/fórmulas conforme docs/ge-historico/*_A66_NT89*)
+    var fullTarget = sheet.getRange("A66:NT89");
+    fullTarget.clearContent();
+    fullTarget.clearFormat();
+    fullTarget.clearDataValidations();
+    fullTarget.clearNote();
+
+    var fixedValues = [
+        ["SEMANA 19", "", "", "", ""],
+        ["SEMANA 18", "", "", "", ""],
+        ["SEMANA 17", "", "", "", ""],
+        ["SEMANA 16", "", "", "", ""],
+        ["SEMANA 15", "", "", "", ""],
+        ["SEMANA 14", "", "", "", ""],
+        ["SEMANA 13", "", "", "", ""],
+        ["SEMANA 12", "", "", "", ""],
+        ["SEMANA 11", "", "", "", ""],
+        ["SEMANA 10", "", "", "", ""],
+        ["SEMANA 09", "", "", "", ""],
+        ["SEMANA 08", "", "", "", ""],
+        ["SEMANA 07", "", "", "", ""],
+        ["SEMANA 06", "", "", "", ""],
+        ["SEMANA 05", "", "", "", ""],
+        ["SEMANA 04", "", "", "", ""],
+        ["SEMANA 03", "", "", "", ""],
+        ["SEMANA 02", "", "", "", ""],
+        ["SEMANA 01", "", "-", "MENSAL", ""],
+        ["MAIO", "", "", 0.65, ""],
+        ["ABRIL", "", "", 0.70, ""],
+        ["MARÇO", "", "", 0.71, ""],
+        ["FEVEREIRO", "", "", 0.63, ""],
+        ["JANEIRO", "", "-", 0.56, ""]
     ];
-    var target = sheet.getRange(66, 1, values.length, 5);
-    target.setValues(values);
 
-    // Aparência: seguir padrão visual já existente na aba (bloco vizinho acima)
+    var panel = sheet.getRange("A66:E89");
+    panel.setValues(fixedValues);
+
+    // Fórmulas dinâmicas oficiais (docs/ge-historico/formulas_A66_NT89.md)
+    sheet.getRange("B66").setFormula("=D63");
+    sheet.getRange("C66").setFormula("=(B66/B67)-1");
+
+    sheet.getRange("B67").setFormula("=MÉDIA(H63;L63;P63;T63;X63;J65)");
+    sheet.getRange("B68").setFormula("=MÉDIA(AB63;AF63;AJ63;AN63;AR63)");
+    sheet.getRange("B69").setFormula("=MÉDIA(AV63;AZ63;BD63;BH63;BL63)");
+    sheet.getRange("B70").setFormula("=MÉDIA(BP63;BT63;BX63;CB63;CF63)");
+    sheet.getRange("B71").setFormula("=MÉDIA(CJ63;CN63;CR63;CV63;CZ63)");
+    sheet.getRange("B72").setFormula("=MÉDIA(DD63;DH63;DL63;DP63;DT63)");
+    sheet.getRange("B73").setFormula("=MÉDIA(DX63;EB63;EF63;EJ63;EN63)");
+    sheet.getRange("B74").setFormula("=MÉDIA(ER63;EV63;EZ63;FD63;FH63)");
+    sheet.getRange("B75").setFormula("=MÉDIA(FL63;FP63;FT63;FX63;GB63)");
+    sheet.getRange("B76").setFormula("=MÉDIA(GF63;GJ63;GN63;GR63;GV63)");
+    sheet.getRange("B77").setFormula("=MÉDIA(GZ63;HD63;HH63;HL63;HP63)");
+    sheet.getRange("B78").setFormula("=MÉDIA(HT63;HX63;IB63;IF63;IJ63)");
+    sheet.getRange("B79").setFormula("=MÉDIA(IN63;IR63;IV63;IZ63;JD63)");
+    sheet.getRange("B80").setFormula("=MÉDIA(JH63;JL63;JP63;JT63;JX63)");
+    sheet.getRange("B81").setFormula("=MÉDIA(KB63;KF63;KJ63;KN63;KR63)");
+    sheet.getRange("B82").setFormula("=MÉDIA(KV63;KZ63;LD63;LH63;LL63)");
+    sheet.getRange("B83").setFormula("=MÉDIA(LP63;LT63;LX63;MB63;MF63)");
+    sheet.getRange("B84").setFormula("=MÉDIA(MJ63;MN63;MR63;MV63;MZ63)");
+
+    sheet.getRange("B85").setFormula("=MÉDIA(D63;H63;L63;P63;T63;X63;AB63)");
+    sheet.getRange("C85").setFormula("=(B85/B86)-1");
+    sheet.getRange("E85").setFormula("=(B85/D85)-1");
+
+    sheet.getRange("B86").setFormula("=MÉDIA(DL63;DH63;DD63;CZ63;CV63;CR63;CN63;CJ63;CF63;CB63;BX63;BT63;BP63;BL63;BH63;BD63;AZ63;AV63;AR63;AN63;AJ63;AF63;AB63)");
+    sheet.getRange("B87").setFormula("=MÉDIA(GV63;GR63;GN63;GJ63;GF63;GB63;FX63;FT63;FP63;FL63;FH63;FD63;EZ63;EV63;ER63;EN63;EJ63;EF63;EB63;DX63;DT63;DP63)");
+    sheet.getRange("B88").setFormula("=MÉDIA(JX63;JT63;JP63;JL63;JH63;JD63;IZ63;IV63;IR63;IN63;IJ63;IF63;IB63;HX63;HT63;HP63;HL63;HH63;HD63;GZ63)");
+    sheet.getRange("B89").setFormula("=MÉDIA(MZ63;MV63;MR63;MN63;MJ63;MF63;MB63;LX63;LT63;LP63;LL63;LH63;LD63;KZ63;KV63;KR63;KN63;KJ63;KF63;KB63)");
+
+    // Aparência: base no estilo do bloco vizinho e alinhamento do modelo oficial
     var model = sheet.getRange(63, 1, 1, 5);
-    model.copyTo(target, SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
+    model.copyTo(panel, SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
+    panel.setVerticalAlignment("middle");
+    sheet.getRange("A66:A89").setHorizontalAlignment("left");
+    sheet.getRange("B66:E89").setHorizontalAlignment("center");
 
-    target.setVerticalAlignment("middle");
-    sheet.getRange(66, 1, values.length, 1).setHorizontalAlignment("left");
-    sheet.getRange(66, 2, values.length, 4).setHorizontalAlignment("center");
+    // Formatação numérica alinhada ao modelo A66:E89
+    sheet.getRange("B66:B89").setNumberFormat("0.00");
+    sheet.getRange("C66:C89").setNumberFormat("0.00%");
+    sheet.getRange("D85:D89").setNumberFormat("0.00");
+    sheet.getRange("E85:E89").setNumberFormat("0.00%");
 
-    // Formatos numéricos conforme bloco-modelo (decimais e percentuais)
-    sheet.getRange(66, 2, values.length, 1).setNumberFormat("0.00");
-    sheet.getRange(66, 3, values.length, 1).setNumberFormat("0.00%");
-    sheet.getRange(82, 4, 4, 1).setNumberFormat("0.00");
-    sheet.getRange(82, 5, 4, 1).setNumberFormat("0.00%");
-
-    // Bordas para manter o padrão tabular do histórico
-    target.setBorder(true, true, true, true, true, true);
+    panel.setBorder(true, true, true, true, true, true);
 }
 
 // --- Média por semana GE ---
