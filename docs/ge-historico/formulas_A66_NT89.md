@@ -1,0 +1,47 @@
+# Fórmulas importantes — GE - Histórico — A66:NT89
+
+Fonte: extraído do arquivo `JogoAberto_Radar(5).xlsx`, aba `GE - Histórico`, intervalo `A66:NT89`.
+
+Observação importante:
+- No arquivo `.xlsx`, as fórmulas aparecem com nomes de função em inglês, como `AVERAGE`.
+- No Google Sheets / Apps Script, o Codex deve respeitar o locale e o padrão já usado no projeto.
+- As fórmulas abaixo são as células dinâmicas encontradas nesse intervalo.
+
+## Células com fórmula
+
+B66 = `=D63`
+C66 = `=(B66/B67)-1`
+
+B67 = `=AVERAGE(H63,L63,P63,T63,X63,J65)`
+B68 = `=AVERAGE(AB63,AF63,AJ63,AN63,AR63)`
+B69 = `=AVERAGE(AV63,AZ63,BD63,BH63,BL63)`
+B70 = `=AVERAGE(BP63,BT63,BX63,CB63,CF63)`
+B71 = `=AVERAGE(CJ63,CN63,CR63,CV63,CZ63)`
+B72 = `=AVERAGE(DD63,DH63,DL63,DP63,DT63)`
+B73 = `=AVERAGE(DX63,EB63,EF63,EJ63,EN63)`
+B74 = `=AVERAGE(ER63,EV63,EZ63,FD63,FH63)`
+B75 = `=AVERAGE(FL63,FP63,FT63,FX63,GB63)`
+B76 = `=AVERAGE(GF63,GJ63,GN63,GR63,GV63)`
+B77 = `=AVERAGE(GZ63,HD63,HH63,HL63,HP63)`
+B78 = `=AVERAGE(HT63,HX63,IB63,IF63,IJ63)`
+B79 = `=AVERAGE(IN63,IR63,IV63,IZ63,JD63)`
+B80 = `=AVERAGE(JH63,JL63,JP63,JT63,JX63)`
+B81 = `=AVERAGE(KB63,KF63,KJ63,KN63,KR63)`
+B82 = `=AVERAGE(KV63,KZ63,LD63,LH63,LL63)`
+B83 = `=AVERAGE(LP63,LT63,LX63,MB63,MF63)`
+B84 = `=AVERAGE(MJ63,MN63,MR63,MV63,MZ63)`
+
+B85 = `=AVERAGE(D63,H63,L63,P63,T63,X63,AB63)`
+C85 = `=(B85/B86)-1`
+E85 = `=(B85/D85)-1`
+
+B86 = `=AVERAGE(DL63,DH63,DD63,CZ63,CV63,CR63,CN63,CJ63,CF63,CB63,BX63,BT63,BP63,BL63,BH63,BD63,AZ63,AV63,AR63,AN63,AJ63,AF63,AB63)`
+B87 = `=AVERAGE(GV63,GR63,GN63,GJ63,GF63,GB63,FX63,FT63,FP63,FL63,FH63,FD63,EZ63,EV63,ER63,EN63,EJ63,EF63,EB63,DX63,DT63,DP63)`
+B88 = `=AVERAGE(JX63,JT63,JP63,JL63,JH63,JD63,IZ63,IV63,IR63,IN63,IJ63,IF63,IB63,HX63,HT63,HP63,HL63,HH63,HD63,GZ63)`
+B89 = `=AVERAGE(MZ63,MV63,MR63,MN63,MJ63,MF63,MB63,LX63,LT63,LP63,LL63,LH63,LD63,KZ63,KV63,KR63,KN63,KJ63,KF63,KB63)`
+
+## Resumo
+
+Total de células com fórmula no intervalo A66:NT89: **27**.
+
+As demais células do intervalo são rótulos fixos, valores calculados já exportados, vazias ou células de apoio visual.
