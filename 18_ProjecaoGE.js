@@ -269,16 +269,18 @@ function reconstruirCadeiaProjecaoGE_(sheet, editedRow) {
     var rng = sheet.getRange(startRow, PROJ_GE.AUD_COL, n, 1);
     var vals = rng.getValues();
     var fxs = rng.getFormulas();
-    var out = rng.getFormulas(); // preserva o que já existe
 
-    var mudou = false;
     for (var i = 0; i < n; i++) {
         var rowNum = startRow + i;
         var hasFormula = fxs[i][0] !== "" && fxs[i][0] != null;
         var typedReal = (!hasFormula && typeof vals[i][0] === "number" && vals[i][0] !== 0);
         if (typedReal) continue; // preserva real digitado
-        var f = "=SE(D" + (rowNum - 1) + '="";"";' + Lproj + rowNum + ")";
-        if (out[i][0] !== f) { out[i][0] = f; mudou = true; }
+        // IMPORTANTE: usar setFormulaSafe_ (USER_ENTERED) — o MESMO caminho do
+        // resto do projeto, que grava pt-BR corretamente. NÃO usar o setFormula/
+        // setFormulas NATIVO aqui: o método nativo espera sintaxe en-US e geraria
+        // #NAME? ao receber "SE" em português (foi o que causava o erro nas
+        // linhas abaixo da editada, segundos após a digitação).
+        setFormulaSafe_(sheet.getRange(rowNum, PROJ_GE.AUD_COL),
+            "=SE(D" + (rowNum - 1) + '="";"";' + Lproj + rowNum + ")");
     }
-    if (mudou) rng.setFormulas(out); // 1 lote, em pt-BR (setFormulas não traduz)
 }
