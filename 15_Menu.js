@@ -63,6 +63,7 @@ function onOpen() {
       ui.createMenu("🔮 Calibragem / Predição")
         .addItem("🔄 Atualizar Calibragem (GS–GY)", "atualizarCalibragemGE")
         .addItem("🎯 Instalar/Atualizar Projeção de Audiência", "instalarProjecaoAudienciaGE")
+        .addItem("➕🎯 Adicionar Novo Dia + Projeção", "arquivarEProjetarGE")
     )
     .addSubMenu(
       ui.createMenu("📈 Análise por Tema")
@@ -107,6 +108,7 @@ function onOpen() {
 
 // =============================================================================
 // onEdit — auto-atualizar "GE - Média por Comentarista" ao digitar nome
+//          + reconstruir cadeia de projeção de audiência (coluna D)
 // =============================================================================
 
 function onEdit(e) {
@@ -115,23 +117,33 @@ function onEdit(e) {
         var sheet = e.range.getSheet();
         var histName = (typeof CFG !== "undefined" && CFG.GE_OUT_HISTORICO)
             ? CFG.GE_OUT_HISTORICO : "GE - Histórico";
-        if (sheet.getName() !== histName) return;
-        var row = e.range.getRow();
-        var col = e.range.getColumn();
-        // Reconstroi a cadeia de projeção somente em células D vazias abaixo da edição.
-        // O recálculo normal fica com o motor da planilha; para funcionar em onEdit
-        // simples, o helper usa SpreadsheetApp.setFormula em pt-BR em vez da Sheets API v4.
-        if (col === 4 && row >= 3 && row <= 62 && typeof restaurarCadeiaProjecaoAudienciaGEOnEdit_ === "function") {
-            restaurarCadeiaProjecaoAudienciaGEOnEdit_(sheet, row);
-        }
-        // Dispara quando comentarista 1 (row 64) ou comentarista 2 (row 65) é editado
-        if (row === 64 || row === 65) {
-            atualizarMediaPorComentaristaGE_();
+        if (sheet.getName() === histName) {
+            var row = e.range.getRow();
+            var col = e.range.getColumn();
+
+            // Dispara quando comentarista 1 (row 64) ou comentarista 2 (row 65) é editado
+            if (row === 64 || row === 65) {
+                atualizarMediaPorComentaristaGE_();
+            }
+
+            // Projeção de audiência: ao editar a coluna D (4) nas linhas 3..62,
+            // reconstrói a cadeia de projeção nas células D vazias abaixo.
+            // As células com real digitado são preservadas; as fórmulas abaixo
+            // recalculam sozinhas pelo motor da planilha.
+            if (col === 4 && row >= 3 && row <= 62 &&
+                typeof reconstruirCadeiaProjecaoGE_ === "function") {
+                reconstruirCadeiaProjecaoGE_(sheet, row);
+            }
         }
     } catch (err) {
         // Silencioso para não interromper a edição do usuário
     }
-    onEditAlertaTemaGE(e);
+    // Protegido: um erro aqui não deve travar a digitação do usuário.
+    try {
+        if (typeof onEditAlertaTemaGE === "function") onEditAlertaTemaGE(e);
+    } catch (err2) {
+        // silencioso
+    }
 }
 
 // =============================================================================
