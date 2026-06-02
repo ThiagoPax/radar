@@ -62,6 +62,7 @@ function onOpen() {
     .addSubMenu(
       ui.createMenu("🔮 Calibragem / Predição")
         .addItem("🔄 Atualizar Calibragem (GS–GY)", "atualizarCalibragemGE")
+        .addItem("🎯 Instalar/Atualizar Projeção de Audiência", "instalarProjecaoAudienciaGE")
     )
     .addSubMenu(
       ui.createMenu("📈 Análise por Tema")
@@ -116,6 +117,13 @@ function onEdit(e) {
             ? CFG.GE_OUT_HISTORICO : "GE - Histórico";
         if (sheet.getName() !== histName) return;
         var row = e.range.getRow();
+        var col = e.range.getColumn();
+        // Reconstroi a cadeia de projeção somente em células D vazias abaixo da edição.
+        // O recálculo normal fica com o motor da planilha; para funcionar em onEdit
+        // simples, o helper usa SpreadsheetApp.setFormula em pt-BR em vez da Sheets API v4.
+        if (col === 4 && row >= 3 && row <= 62 && typeof restaurarCadeiaProjecaoAudienciaGEOnEdit_ === "function") {
+            restaurarCadeiaProjecaoAudienciaGEOnEdit_(sheet, row);
+        }
         // Dispara quando comentarista 1 (row 64) ou comentarista 2 (row 65) é editado
         if (row === 64 || row === 65) {
             atualizarMediaPorComentaristaGE_();
