@@ -1,202 +1,284 @@
 // =============================================================================
-// 18_ProjecaoGE.js — Projeção minuto-a-minuto re-ancorada (Gazeta Esportiva)
+// 18_ProjecaoGE.js — Projeção de audiência re-ancorada (aba GE - Histórico)
+// =============================================================================
+//
+// O QUE FAZ:
+// Na aba "GE - Histórico", a coluna D contém a audiência minuto-a-minuto do
+// programa MAIS RECENTE (linhas 3..62 = 18:00..18:59). Ao digitar a audiência
+// REAL de um minuto em D, as células de D ABAIXO se recalculam como projeção
+// que: segue o formato histórico, re-ancora no último real, incorpora o tema
+// (coluna F) e, em caso de quebra, adota o novo patamar e o mantém até o fim.
+//
+// COLUNAS AUXILIARES (à direita, as últimas): MOLDE DIA | PASSO | BETA FAIXA | PROJ
+//
+// =============================================================================
+// IDIOMA DAS FÓRMULAS = PORTUGUÊS (pt-BR), igual ao 11_Historico_GE.js
+// -----------------------------------------------------------------------------
+// Este projeto, na planilha em locale pt-BR, grava fórmulas em PORTUGUÊS via
+// setFormulaSafe_/batchSetFormulasSafe_ (USER_ENTERED). Padrão confirmado no
+// 11_Historico_GE.js, que escreve =SE(OU(...);...), =MÉDIA(...), =SEERRO(...),
+// =PROCV(...), separador de argumentos ";" e decimal ",".
+// Portanto AQUI TAMBÉM tudo é pt-BR:
+//   IF->SE | OR->OU | ROUND->ARRED | VLOOKUP->PROCV | IFERROR->SEERRO
+//   ROW->LIN | separador "," -> ";" | decimal "." -> ","
+// O nome da aba de tema vem SEMPRE de CFG.GE_OUT_MEDIA_TEMA (nunca literal),
+// para não ser corrompido por find/replace (ex.: "por" -> "pOU").
+//
+// COEFICIENTES BETA (persistência empírica do desvio, AR(1), ~105 dias):
+//   18:00-18:20 -> 0,9478 | 18:21-18:45 -> 0,9677 | 18:46-18:59 -> 0,9552
 // =============================================================================
 
-var PROJECAO_AUDIENCIA_GE = {
-    DATA_START_ROW: 3,
-    DATA_END_ROW: 62,
-    AUD_COL: 4,
-    TEMA_COL: 6,
-    FIRST_HIST_AUD_COL: 8,
-    HEADERS: ["MOLDE DIA", "PASSO", "BETA FAIXA", "PROJ"]
+var PROJ_GE = {
+    FIRST_DATA_ROW: 3,
+    LAST_DATA_ROW: 62,
+    HEADER_ROW: 2,
+    AUD_COL: 4, // coluna D
+    FIRST_CLOSED_DAY_COL: 8, // coluna H (1º dia já fechado)
+    BLOCK_SIZE: 4,
+    HEADERS: ["MOLDE DIA", "PASSO", "BETA FAIXA", "PROJ"],
+    TEMA_LOOKUP_RETURN_COL: 6,
+    BETA_INICIO: "0,9478", // 18:00-18:20
+    BETA_MEIO: "0,9677",   // 18:21-18:45
+    BETA_FIM: "0,9552",    // 18:46-18:59
+    MOLDE_MIN: "0,0001"    // piso do molde
 };
 
-/**
- * Escreve/atualiza as fórmulas de projeção de audiência re-ancorada
- * na aba GE - Histórico (coluna D, linhas 3-62), criando/atualizando as
- * 4 colunas auxiliares (MOLDE DIA, PASSO, BETA FAIXA, PROJ) à direita.
- */
-function instalarProjecaoAudienciaGE_() {
-    var ss = SpreadsheetApp.getActive();
-    var sheet = ss.getSheetByName(CFG.GE_OUT_HISTORICO);
-    if (!sheet) throw Error("Aba não encontrada: " + CFG.GE_OUT_HISTORICO);
-    if (sheet.getMaxRows() < PROJECAO_AUDIENCIA_GE.DATA_END_ROW) {
-        throw Error("Aba " + CFG.GE_OUT_HISTORICO + " precisa ter ao menos " + PROJECAO_AUDIENCIA_GE.DATA_END_ROW + " linhas para instalar a projeção.");
-    }
+// =============================================================================
+// Entradas públicas (menu)
+// =============================================================================
 
-    var auxStartCol = encontrarInicioAuxProjecaoGE_(sheet);
-    if (!auxStartCol) auxStartCol = sheet.getLastColumn() + 2;
-    garantirColunasProjecaoGE_(sheet, auxStartCol + PROJECAO_AUDIENCIA_GE.HEADERS.length - 1);
-
-    sheet.getRange(2, auxStartCol, 1, PROJECAO_AUDIENCIA_GE.HEADERS.length)
-        .setValues([PROJECAO_AUDIENCIA_GE.HEADERS])
-        .setFontWeight("bold")
-        .setBackground("#5B2C6F")
-        .setFontColor("white")
-        .setHorizontalAlignment("center");
-
-    var moldeCol = auxStartCol;
-    var passoCol = auxStartCol + 1;
-    var betaCol = auxStartCol + 2;
-    var projCol = auxStartCol + 3;
-
-    var moldeL = columnToLetter_(moldeCol);
-    var betaL = columnToLetter_(betaCol);
-    var projL = columnToLetter_(projCol);
-    var temaSheetRef = nomeAbaFormulaProjecaoGE_(CFG.GE_OUT_MEDIA_TEMA);
-
-    var audColsHist = colunasAudienciaHistoricasProjecaoGE_(sheet);
-    var moldeF = [];
-    var passoF = [];
-    var betaF = [];
-    var projF = [];
-
-    for (var r = PROJECAO_AUDIENCIA_GE.DATA_START_ROW; r <= PROJECAO_AUDIENCIA_GE.DATA_END_ROW; r++) {
-        // MOLDE DIA usa a opção preferida: média das audiências históricas fechadas
-        // a partir de H (exclui D, dia atual). Assim D pode receber projeções/reais
-        // sem realimentar B→MOLDE→PROJ→D durante o programa ao vivo.
-        var moldeBase = formulaMoldeBaseHistoricoProjecaoGE_(audColsHist, r);
-        moldeF.push(["=IF(OR(" + moldeBase + '="",' + moldeBase + "=0),0.0001," + moldeBase + "*IFERROR(VLOOKUP(F" + r + "," + temaSheetRef + "!$A:$F,6,0),1))"]);
-
-        if (r === PROJECAO_AUDIENCIA_GE.DATA_START_ROW) {
-            passoF.push(["=1"]);
-            projF.push(['=IF(D' + r + '="","",D' + r + ')']);
-        } else {
-            passoF.push(["=IF(OR(" + moldeL + (r - 1) + '="",' + moldeL + (r - 1) + "=0),1," + moldeL + r + "/" + moldeL + (r - 1) + ")"]);
-            projF.push(["=IF(D" + (r - 1) + '="","",ROUND(' + moldeL + r + "*(1+(D" + (r - 1) + "/" + moldeL + (r - 1) + "-1)*" + betaL + r + "),2))"]);
-        }
-
-        // Coeficientes BETA medidos no histórico real (105 dias, AR(1) do desvio
-        // relativo à média; meia-vida aproximada de 16 minutos), por faixa horária.
-        betaF.push(["=IF(ROW()<=23,0.9478,IF(ROW()<=48,0.9677,0.9552))"]);
-    }
-
-    batchSetFormulasSafe_(sheet.getRange(PROJECAO_AUDIENCIA_GE.DATA_START_ROW, moldeCol, 60, 1), moldeF);
-    batchSetFormulasSafe_(sheet.getRange(PROJECAO_AUDIENCIA_GE.DATA_START_ROW, passoCol, 60, 1), passoF);
-    batchSetFormulasSafe_(sheet.getRange(PROJECAO_AUDIENCIA_GE.DATA_START_ROW, betaCol, 60, 1), betaF);
-    batchSetFormulasSafe_(sheet.getRange(PROJECAO_AUDIENCIA_GE.DATA_START_ROW, projCol, 60, 1), projF);
-
-    restaurarFormulasColunaDProjecaoGE_(sheet, projL);
-
-    SpreadsheetApp.flush();
-    sheet.getRange(PROJECAO_AUDIENCIA_GE.DATA_START_ROW, PROJECAO_AUDIENCIA_GE.AUD_COL, 60, 1).setNumberFormat("0.00");
-    sheet.getRange(PROJECAO_AUDIENCIA_GE.DATA_START_ROW, projCol, 60, 1).setNumberFormat("0.00");
-    sheet.getRange(PROJECAO_AUDIENCIA_GE.DATA_START_ROW, moldeCol, 60, 3).setNumberFormat("0.0000");
-
-    [100, 80, 90, 80].forEach(function(w, i) {
-        sheet.setColumnWidth(auxStartCol + i, w);
-    });
-
-    return {
-        auxStartCol: auxStartCol,
-        auxProjCol: projCol,
-        audColsHistoricas: audColsHist.length
-    };
-}
-
-/** Entrada pública via menu (com alert de confirmação/sucesso). */
 function instalarProjecaoAudienciaGE() {
     var ui = SpreadsheetApp.getUi();
     try {
-        var result = instalarProjecaoAudienciaGE_();
-        ui.alert(
-            "✅ Projeção instalada/atualizada",
-            "As fórmulas de projeção de audiência foram atualizadas em " + CFG.GE_OUT_HISTORICO + ".\n\n" +
-            "Auxiliares a partir da coluna " + columnToLetter_(result.auxStartCol) + ".\n" +
-            "Dias históricos usados no molde: " + result.audColsHistoricas + ".",
-            ui.ButtonSet.OK
-        );
-    } catch (err) {
-        ui.alert("❌ Erro ao instalar projeção", err && err.message ? err.message : String(err), ui.ButtonSet.OK);
-        throw err;
-    }
-}
-
-function encontrarInicioAuxProjecaoGE_(sheet) {
-    var lastCol = Math.max(sheet.getLastColumn(), 1);
-    var headers = sheet.getRange(2, 1, 1, lastCol).getValues()[0];
-    for (var i = 0; i < headers.length; i++) {
-        if ((headers[i] || "").toString().trim() === PROJECAO_AUDIENCIA_GE.HEADERS[0]) return i + 1;
-    }
-    return null;
-}
-
-function encontrarColunaProjProjecaoGE_(sheet) {
-    var lastCol = Math.max(sheet.getLastColumn(), 1);
-    var headers = sheet.getRange(2, 1, 1, lastCol).getValues()[0];
-    for (var i = 0; i < headers.length; i++) {
-        if ((headers[i] || "").toString().trim() === "PROJ") return i + 1;
-    }
-    return null;
-}
-
-function garantirColunasProjecaoGE_(sheet, requiredCol) {
-    if (sheet.getMaxColumns() < requiredCol) {
-        sheet.insertColumnsAfter(sheet.getMaxColumns(), requiredCol - sheet.getMaxColumns());
-    }
-}
-
-function colunasAudienciaHistoricasProjecaoGE_(sheet) {
-    var audCols = (typeof getAudColsGE_ === "function") ? getAudColsGE_(sheet) : [];
-    if (!audCols || audCols.length === 0) {
-        var lastCol = sheet.getLastColumn();
-        for (var c = PROJECAO_AUDIENCIA_GE.AUD_COL; c <= lastCol; c += 4) audCols.push(c);
-    }
-    return audCols.filter(function(c) { return c >= PROJECAO_AUDIENCIA_GE.FIRST_HIST_AUD_COL; });
-}
-
-function formulaMoldeBaseHistoricoProjecaoGE_(audColsHist, row) {
-    if (!audColsHist || audColsHist.length === 0) return "B" + row;
-    var refs = audColsHist.map(function(c) { return columnToLetter_(c) + row; });
-    return "(" + refs.join("+") + ")/" + audColsHist.length;
-}
-
-function nomeAbaFormulaProjecaoGE_(sheetName) {
-    return "'" + (sheetName || "").toString().replace(/'/g, "''") + "'";
-}
-
-function restaurarFormulasColunaDProjecaoGE_(sheet, projL) {
-    var dRange = sheet.getRange(PROJECAO_AUDIENCIA_GE.DATA_START_ROW, PROJECAO_AUDIENCIA_GE.AUD_COL, 60, 1);
-    var values = dRange.getValues();
-    var currentFormulas = dRange.getFormulas();
-    var formulas = [];
-    var ranges = [];
-    for (var i = 0; i < values.length; i++) {
-        var row = PROJECAO_AUDIENCIA_GE.DATA_START_ROW + i;
-        var v = values[i][0];
-        var hasFormula = !!currentFormulas[i][0];
-        var isBlankOrZero = v === "" || v === null || v === 0 || v === "0";
-        if (!hasFormula && !isBlankOrZero) continue;
-
-        if (row === PROJECAO_AUDIENCIA_GE.DATA_START_ROW) {
-            if (isBlankOrZero || hasFormula) sheet.getRange(row, PROJECAO_AUDIENCIA_GE.AUD_COL).clearContent();
-            continue;
+        var res = instalarProjecaoAudienciaGE_();
+        if (!res || !res.ok) {
+            ui.alert("⚠️ Projeção de Audiência", (res && res.msg) ? res.msg : "Não foi possível instalar a projeção.", ui.ButtonSet.OK);
+            return;
         }
-        ranges.push(row);
-        formulas.push(['=IF(D' + (row - 1) + '="","",' + projL + row + ')']);
-    }
-
-    for (var j = 0; j < ranges.length; j++) {
-        batchSetFormulasSafe_(sheet.getRange(ranges[j], PROJECAO_AUDIENCIA_GE.AUD_COL, 1, 1), [formulas[j]]);
+        ui.alert("✅ Projeção de Audiência instalada",
+            "Colunas auxiliares (" + PROJ_GE.HEADERS.join(", ") + ") criadas/atualizadas.\n" +
+            "Células D substituídas pela projeção: " + res.escritas + "\n" +
+            "Reais digitados preservados: " + res.preservadas + "\n\n" +
+            "Agora digite a audiência real em D (e o tema em F) minuto a minuto. " +
+            "As linhas abaixo se recalculam sozinhas.",
+            ui.ButtonSet.OK);
+    } catch (err) {
+        ui.alert("❌ Erro ao instalar projeção", err.message, ui.ButtonSet.OK);
     }
 }
 
-function restaurarCadeiaProjecaoAudienciaGEOnEdit_(sheet, editedRow) {
-    var projCol = encontrarColunaProjProjecaoGE_(sheet);
-    if (!projCol) return;
-    var projL = columnToLetter_(projCol);
-    var startRow = Math.max(editedRow + 1, PROJECAO_AUDIENCIA_GE.DATA_START_ROW + 1);
-    if (startRow > PROJECAO_AUDIENCIA_GE.DATA_END_ROW) return;
-
-    var numRows = PROJECAO_AUDIENCIA_GE.DATA_END_ROW - startRow + 1;
-    var range = sheet.getRange(startRow, PROJECAO_AUDIENCIA_GE.AUD_COL, numRows, 1);
-    var values = range.getValues();
-    for (var i = 0; i < values.length; i++) {
-        if (values[i][0] !== "" && values[i][0] !== null) continue;
-        var row = startRow + i;
-        // onEdit simples pode não ter autorização para Sheets API v4. Somente aqui
-        // usamos SpreadsheetApp.setFormula em pt-BR para reconstruir células D vazias;
-        // a instalação/recalibragem manual continua usando USER_ENTERED via helpers safe_.
-        sheet.getRange(row, PROJECAO_AUDIENCIA_GE.AUD_COL).setFormula('=SE(D' + (row - 1) + '="";"";' + projL + row + ')');
+// Fluxo combinado: arquiva o novo dia E instala a projeção, num clique só.
+function arquivarEProjetarGE() {
+    var ui = SpreadsheetApp.getUi();
+    var passoArquivo = "";
+    try {
+        if (typeof adicionarNovoDiaManualGE === "function") {
+            adicionarNovoDiaManualGE();
+            passoArquivo = "Novo dia adicionado.";
+        } else if (typeof arquivarProgramaAtualGazeta === "function") {
+            arquivarProgramaAtualGazeta();
+            passoArquivo = "Programa arquivado.";
+        } else {
+            passoArquivo = "(Função de arquivamento não encontrada — pulei esta etapa.)";
+        }
+    } catch (err) {
+        passoArquivo = "Arquivamento retornou aviso: " + err.message + " (a projeção será instalada mesmo assim).";
     }
+
+    try {
+        var res = instalarProjecaoAudienciaGE_();
+        if (!res || !res.ok) {
+            ui.alert("⚠️ Projeção", passoArquivo + "\n\n" + ((res && res.msg) ? res.msg : "Falha ao instalar a projeção."), ui.ButtonSet.OK);
+            return;
+        }
+        ui.alert("✅ Pronto",
+            passoArquivo + "\n\n" +
+            "Projeção instalada. Células D projetadas: " + res.escritas +
+            " | reais preservados: " + res.preservadas + "\n\n" +
+            "Digite a audiência real em D (e tema em F) minuto a minuto.",
+            ui.ButtonSet.OK);
+    } catch (err) {
+        ui.alert("❌ Erro", passoArquivo + "\n\nErro ao instalar projeção: " + err.message, ui.ButtonSet.OK);
+    }
+}
+
+// =============================================================================
+// Core
+// =============================================================================
+
+function instalarProjecaoAudienciaGE_() {
+    var ss = SpreadsheetApp.getActive();
+    var sheet = ss.getSheetByName(CFG.GE_OUT_HISTORICO);
+    if (!sheet) return { ok: false, msg: "Aba \"" + CFG.GE_OUT_HISTORICO + "\" não encontrada." };
+    if (sheet.getLastRow() < PROJ_GE.LAST_DATA_ROW) {
+        return { ok: false, msg: "A aba precisa ter ao menos " + PROJ_GE.LAST_DATA_ROW + " linhas." };
+    }
+
+    // 0) Limpa colunas auxiliares antigas/duplicadas/órfãs antes de recriar.
+    limparColunasAuxAntigasGE_(sheet);
+
+    // 1) Cria as 4 colunas auxiliares limpas, à direita.
+    var aux = criarColunasAuxProjGE_(sheet);
+
+    // 2) Colunas de audiência dos dias JÁ FECHADOS (H, L, P, ...), exceto o atual (D).
+    var closedAudCols = listarColunasAudienciaFechadasGE_(sheet, aux.molde);
+
+    // 3) Fórmulas das auxiliares (linhas 3..62) — TUDO pt-BR.
+    var nLinhas = PROJ_GE.LAST_DATA_ROW - PROJ_GE.FIRST_DATA_ROW + 1;
+    var molde = [], passo = [], beta = [], proj = [];
+    var Lmolde = columnToLetter_(aux.molde);
+    var Lbeta = columnToLetter_(aux.beta);
+    var Lproj = columnToLetter_(aux.proj);
+    var temaRef = "'" + CFG.GE_OUT_MEDIA_TEMA.replace(/'/g, "''") + "'";
+
+    for (var r = PROJ_GE.FIRST_DATA_ROW; r <= PROJ_GE.LAST_DATA_ROW; r++) {
+        var mediaBase = montarMediaBaseGE_(closedAudCols, r);
+        var fatorTema = "SEERRO(PROCV(F" + r + ";" + temaRef + "!$A:$F;" + PROJ_GE.TEMA_LOOKUP_RETURN_COL + ";0);1)";
+        var moldeF;
+        if (mediaBase === "") {
+            moldeF = "=SE(OU(B" + r + '="";B' + r + "=0);" + PROJ_GE.MOLDE_MIN + ";B" + r + "*" + fatorTema + ")";
+        } else {
+            moldeF = "=SE(OU((" + mediaBase + ')="";(' + mediaBase + ")=0);" + PROJ_GE.MOLDE_MIN + ";(" + mediaBase + ")*" + fatorTema + ")";
+        }
+        molde.push([moldeF]);
+
+        passo.push([r === PROJ_GE.FIRST_DATA_ROW ? "=1"
+            : "=SE(OU(" + Lmolde + (r - 1) + '="";' + Lmolde + (r - 1) + "=0);1;" + Lmolde + r + "/" + Lmolde + (r - 1) + ")"]);
+
+        beta.push(["=SE(LIN()<=23;" + PROJ_GE.BETA_INICIO + ";SE(LIN()<=48;" + PROJ_GE.BETA_MEIO + ";" + PROJ_GE.BETA_FIM + "))"]);
+
+        proj.push([r === PROJ_GE.FIRST_DATA_ROW ? "=SE(D" + r + '="";"";D' + r + ")"
+            : "=SE(D" + (r - 1) + '="";"";ARRED(' + Lmolde + r + "*(1+(D" + (r - 1) + "/" + Lmolde + (r - 1) + "-1)*" + Lbeta + r + ");2))"]);
+    }
+
+    batchSetFormulasSafe_(sheet.getRange(PROJ_GE.FIRST_DATA_ROW, aux.molde, nLinhas, 1), molde);
+    batchSetFormulasSafe_(sheet.getRange(PROJ_GE.FIRST_DATA_ROW, aux.passo, nLinhas, 1), passo);
+    batchSetFormulasSafe_(sheet.getRange(PROJ_GE.FIRST_DATA_ROW, aux.beta, nLinhas, 1), beta);
+    batchSetFormulasSafe_(sheet.getRange(PROJ_GE.FIRST_DATA_ROW, aux.proj, nLinhas, 1), proj);
+
+    // 4) Coluna D: substitui FÓRMULAS (modelo antigo OU projeção velha) pela
+    //    nova projeção; preserva NÚMEROS digitados pelo usuário SEM tocá-los
+    //    (escrever um número via USER_ENTERED pt-BR poderia reinterpretar o
+    //    separador decimal — por isso a célula de real NÃO é reescrita).
+    var dRange = sheet.getRange(PROJ_GE.FIRST_DATA_ROW, PROJ_GE.AUD_COL, nLinhas, 1);
+    var dValues = dRange.getValues();
+    var dFormulasExist = dRange.getFormulas(); // "" quando não é fórmula
+    var escritas = 0, preservadas = 0;
+
+    for (var k = 0; k < nLinhas; k++) {
+        var rowNum = PROJ_GE.FIRST_DATA_ROW + k;
+        var val = dValues[k][0];
+        var hasFormula = dFormulasExist[k][0] !== "" && dFormulasExist[k][0] != null;
+        var typedReal = (!hasFormula && typeof val === "number" && val !== 0);
+
+        if (typedReal) { preservadas++; continue; } // mantém real digitado, intocado
+
+        var cell = sheet.getRange(rowNum, PROJ_GE.AUD_COL);
+        if (rowNum === PROJ_GE.FIRST_DATA_ROW) {
+            cell.clearContent(); // D3 sem real: aguarda digitação
+        } else {
+            setFormulaSafe_(cell, "=SE(D" + (rowNum - 1) + '="";"";' + Lproj + rowNum + ")");
+            escritas++;
+        }
+    }
+
+    SpreadsheetApp.flush();
+
+    // Formatação (em UM lote por coluna)
+    sheet.getRange(PROJ_GE.FIRST_DATA_ROW, PROJ_GE.AUD_COL, nLinhas, 1).setNumberFormat("0.00");
+    sheet.getRange(PROJ_GE.FIRST_DATA_ROW, aux.molde, nLinhas, 1).setNumberFormat("0.00");
+    sheet.getRange(PROJ_GE.FIRST_DATA_ROW, aux.passo, nLinhas, 1).setNumberFormat("0.000");
+    sheet.getRange(PROJ_GE.FIRST_DATA_ROW, aux.beta, nLinhas, 1).setNumberFormat("0.0000");
+    sheet.getRange(PROJ_GE.FIRST_DATA_ROW, aux.proj, nLinhas, 1).setNumberFormat("0.00");
+
+    return { ok: true, aux: aux, escritas: escritas, preservadas: preservadas };
+}
+
+// =============================================================================
+// Helpers de colunas auxiliares
+// =============================================================================
+
+function limparColunasAuxAntigasGE_(sheet) {
+    var lastCol = sheet.getLastColumn();
+    if (lastCol < 1) return;
+    var headers = sheet.getRange(PROJ_GE.HEADER_ROW, 1, 1, lastCol).getValues()[0];
+    for (var c = lastCol; c >= 1; c--) {
+        var h = ((headers[c - 1] || "") + "").trim();
+        if (PROJ_GE.HEADERS.indexOf(h) !== -1) {
+            sheet.deleteColumn(c);
+        }
+    }
+}
+
+function criarColunasAuxProjGE_(sheet) {
+    var lastCol = sheet.getLastColumn();
+    var start = lastCol + 2;
+    var aux = { molde: start, passo: start + 1, beta: start + 2, proj: start + 3 };
+    sheet.getRange(PROJ_GE.HEADER_ROW, aux.molde, 1, 4).setValues([PROJ_GE.HEADERS]);
+    sheet.getRange(PROJ_GE.HEADER_ROW, aux.molde, 1, 4)
+        .setFontWeight("bold").setBackground("#4285F4").setFontColor("white");
+    sheet.setColumnWidth(aux.molde, 90);
+    sheet.setColumnWidth(aux.passo, 70);
+    sheet.setColumnWidth(aux.beta, 80);
+    sheet.setColumnWidth(aux.proj, 90);
+    return aux;
+}
+
+function listarColunasAudienciaFechadasGE_(sheet, stopBeforeCol) {
+    var lastCol = sheet.getLastColumn();
+    var limit = (stopBeforeCol && stopBeforeCol > 0) ? Math.min(lastCol, stopBeforeCol - 1) : lastCol;
+    // Otimização: lê a linha de cabeçalhos UMA vez, em vez de getValue por coluna.
+    var headers = sheet.getRange(PROJ_GE.HEADER_ROW, 1, 1, limit).getValues()[0];
+    var cols = [];
+    for (var c = PROJ_GE.FIRST_CLOSED_DAY_COL; c <= limit; c += PROJ_GE.BLOCK_SIZE) {
+        var header = ((headers[c - 1] || "") + "").trim();
+        if (header !== "AUDIÊNCIA" && header !== "AUDIENCIA") continue;
+        cols.push(c);
+    }
+    return cols;
+}
+
+function montarMediaBaseGE_(closedAudCols, r) {
+    if (!closedAudCols || closedAudCols.length === 0) return "";
+    var parts = [];
+    for (var i = 0; i < closedAudCols.length; i++) parts.push(columnToLetter_(closedAudCols[i]) + r);
+    return "(" + parts.join("+") + ")/" + closedAudCols.length;
+}
+
+// =============================================================================
+// Reconstrução da cadeia (chamada pelo onEdit em 15_Menu.js)
+// =============================================================================
+// Mantém a coluna D abaixo da linha editada com a fórmula de projeção, sempre
+// que estiver vazia (preserva reais digitados). Em pt-BR (igual ao resto).
+function reconstruirCadeiaProjecaoGE_(sheet, editedRow) {
+    if (!sheet || sheet.getName() !== CFG.GE_OUT_HISTORICO) return;
+
+    var lastCol = sheet.getLastColumn();
+    var headers = sheet.getRange(PROJ_GE.HEADER_ROW, 1, 1, lastCol).getValues()[0];
+    var projIdx = -1;
+    for (var c = 0; c < headers.length; c++) {
+        if (((headers[c] || "") + "").trim() === "PROJ") { projIdx = c + 1; break; }
+    }
+    if (projIdx < 0) return;
+    var Lproj = columnToLetter_(projIdx);
+
+    var startRow = Math.max(editedRow + 1, PROJ_GE.FIRST_DATA_ROW);
+    if (startRow > PROJ_GE.LAST_DATA_ROW) return;
+
+    var n = PROJ_GE.LAST_DATA_ROW - startRow + 1;
+    var rng = sheet.getRange(startRow, PROJ_GE.AUD_COL, n, 1);
+    var vals = rng.getValues();
+    var fxs = rng.getFormulas();
+    var out = rng.getFormulas(); // preserva o que já existe
+
+    var mudou = false;
+    for (var i = 0; i < n; i++) {
+        var rowNum = startRow + i;
+        var hasFormula = fxs[i][0] !== "" && fxs[i][0] != null;
+        var typedReal = (!hasFormula && typeof vals[i][0] === "number" && vals[i][0] !== 0);
+        if (typedReal) continue; // preserva real digitado
+        var f = "=SE(D" + (rowNum - 1) + '="";"";' + Lproj + rowNum + ")";
+        if (out[i][0] !== f) { out[i][0] = f; mudou = true; }
+    }
+    if (mudou) rng.setFormulas(out); // 1 lote, em pt-BR (setFormulas não traduz)
 }
