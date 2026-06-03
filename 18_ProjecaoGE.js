@@ -136,9 +136,13 @@ function instalarProjecaoAudienciaGE_() {
         var fatorTema = "SEERRO(PROCV(F" + r + ";" + temaRef + "!$A:$F;" + PROJ_GE.TEMA_LOOKUP_RETURN_COL + ";0);1)";
         var moldeF;
         if (mediaBase === "") {
-            moldeF = "=SE(OU(B" + r + '="";B' + r + "=0);" + PROJ_GE.MOLDE_MIN + ";B" + r + "*" + fatorTema + ")";
+            // Sem dias fechados: usa a média B (já robusta no 11_Historico_GE).
+            moldeF = "=SEERRO(SE(OU(B" + r + '="";B' + r + "=0);" + PROJ_GE.MOLDE_MIN + ";B" + r + "*" + fatorTema + ");" + PROJ_GE.MOLDE_MIN + ")";
         } else {
-            moldeF = "=SE(OU((" + mediaBase + ')="";(' + mediaBase + ")=0);" + PROJ_GE.MOLDE_MIN + ";(" + mediaBase + ")*" + fatorTema + ")";
+            // Com dias fechados: mediaBase já é MÉDIA(SEERRO(...)) robusta;
+            // o SEERRO externo garante que nada (nem #DIV/0! de média vazia)
+            // propague — cai no piso MOLDE_MIN.
+            moldeF = "=SEERRO(SE(OU((" + mediaBase + ')="";(' + mediaBase + ")=0);" + PROJ_GE.MOLDE_MIN + ";(" + mediaBase + ")*" + fatorTema + ");" + PROJ_GE.MOLDE_MIN + ")";
         }
         molde.push([moldeF]);
 
@@ -238,11 +242,19 @@ function listarColunasAudienciaFechadasGE_(sheet, stopBeforeCol) {
     return cols;
 }
 
+// Monta a média-base do minuto r a partir das colunas de dias fechados.
+// ROBUSTO: cada parcela é envolvida em SEERRO(...;"") para que uma célula
+// histórica com #REF!/#N/D não derrube a soma inteira. Usa MÉDIA (ignora
+// vazios), então o divisor se ajusta sozinho ao número de dias válidos —
+// melhor que dividir por um N fixo quando há buracos no histórico.
+// Retorna "" se não houver colunas.
 function montarMediaBaseGE_(closedAudCols, r) {
     if (!closedAudCols || closedAudCols.length === 0) return "";
     var parts = [];
-    for (var i = 0; i < closedAudCols.length; i++) parts.push(columnToLetter_(closedAudCols[i]) + r);
-    return "(" + parts.join("+") + ")/" + closedAudCols.length;
+    for (var i = 0; i < closedAudCols.length; i++) {
+        parts.push('SEERRO(' + columnToLetter_(closedAudCols[i]) + r + ';"")');
+    }
+    return "MÉDIA(" + parts.join(";") + ")";
 }
 
 // =============================================================================
