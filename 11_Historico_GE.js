@@ -187,6 +187,10 @@ function arquivarProgramaGE_(programDate) {
     // Inserir 4 colunas
     hist.insertColumns(4, 4);
 
+    // FIX: a inserção empurra o bloco mensal do painel (D:E) para H:I.
+    // Devolve imediatamente para D:E, antes de qualquer outra escrita.
+    restaurarBlocoMensalAposInsercaoGE_(hist);
+
     var numExisting = Math.floor((lastCol - 3) / 4);
     var bgColor = (numExisting % 2 === 0) ? "#FDF2F2" : "#FFFFFF";
 
@@ -272,8 +276,14 @@ function arquivarProgramaGE_(programDate) {
 // =============================================================================
 // Atualiza B (média histórica), C (% à média), row 63 (médias do programa) e
 // a coluna de share (&/MIN) — sem tocar nas auxiliares GS-GY ou GZ-HC.
-// Permite que adicionarNovoDiaManualGE rode a previsão inicial antes da
-// calibragem, evitando a circularidade GY≈1 quando D está vazio.
+//
+// FIX CRÍTICO: a versão anterior gravava as fórmulas da linha 63 com
+// getRange(63, 4, N, 1) — ou seja, NA VERTICAL, descendo pela coluna D
+// (D63:D175 com 113 programas). Isso poluía D64..D175 com =(SOMA(...))/60,
+// expandia a planilha para 175 linhas, deixava lixo em D157:D175 e fazia o
+// painel "preservar" um valor fantasma em D85 (1,0265). Agora cada fórmula
+// vai para (63, audCol) — uma por programa, todas na LINHA 63 — via
+// batchSetFormulasSparseSafe_ (1 chamada de API).
 // -----------------------------------------------------------------------------
 function atualizarFormulasBaseGE_(sheet) {
     var audCols = getAudColsGE_(sheet);
@@ -289,12 +299,17 @@ function atualizarFormulasBaseGE_(sheet) {
     }
     batchSetFormulasSafe_(sheet.getRange(3, 2, 60, 2), bcFormulas);
 
-    var row63Formulas = [];
+    // Linha 63: UMA fórmula por coluna de AUDIÊNCIA, gravada na própria coluna.
+    var sparse = [];
     for (var i = 0; i < audCols.length; i++) {
         var colL = columnToLetter_(audCols[i]);
-        row63Formulas.push(["=(SOMA(" + colL + "3:" + colL + "62))/60"]);
+        sparse.push({
+            row: 63,
+            col: audCols[i],
+            formula: "=(SOMA(" + colL + "3:" + colL + "62))/60"
+        });
     }
-    batchSetFormulasSafe_(sheet.getRange(63, 4, row63Formulas.length, 1), row63Formulas);
+    batchSetFormulasSparseSafe_(sheet, sparse);
     for (var j = 0; j < audCols.length; j++) {
         sheet.getRange(63, audCols[j]).setNumberFormat("0.00");
     }
@@ -319,294 +334,307 @@ function atualizarFormulasHistoricoGE_(sheet) {
 }
 
 // --- Garantir campos de rodapé do histórico GE ---
-
+// FIX: (1) não expande mais a grade para 160 linhas — nada deve existir abaixo
+// do fim do painel; (2) escreve apenas os 3 labels A63:A65 — a versão anterior
+// também gravava "MÉDIA SEM." em A66 e "% vs ANT." em A67, por cima dos
+// rótulos do painel ("SEM. ATUAL (...)" e a semana anterior).
 function garantirCamposHistoricoGE_() {
     var sheet = SpreadsheetApp.getActive().getSheetByName(CFG.GE_OUT_HISTORICO);
     if (!sheet) return;
-    // Mínimo 160 rows: 1-65 cabeçalho+dados, 66-89 painel A66:NT89 (área protegida),
-    // 95-155 dados auxiliares do gráfico (fora da área protegida).
     var maxRows = sheet.getMaxRows();
-    if (maxRows < 160) sheet.insertRowsAfter(maxRows, 160 - maxRows);
-    var labels = [["MÉDIA"], ["COMENT. 1"], ["COMENT. 2"], ["MÉDIA SEM."], ["% vs ANT."]];
-    sheet.getRange(63, 1, 5, 1).setValues(labels);
-    sheet.getRange(63, 1, 5, 1).setFontWeight("bold").setFontSize(8).setFontColor("#666666");
+    if (maxRows < 94) sheet.insertRowsAfter(maxRows, 94 - maxRows);
+    var labels = [["MÉDIA"], ["COMENT. 1"], ["COMENT. 2"]];
+    sheet.getRange(63, 1, 3, 1).setValues(labels);
+    sheet.getRange(63, 1, 3, 1).setFontWeight("bold").setFontSize(8).setFontColor("#666666");
     preencherBlocoA66E85HistoricoGE_(sheet);
 }
 
 // =============================================================================
-// preencherBlocoA66E85HistoricoGE_ — painel A66:E89 DINÂMICO
+// localizarPainelGE_ — localiza dinamicamente as linhas do painel A66+
 // =============================================================================
-//
-// REESCRITO. Antes era hardcoded (fórmulas fixas tipo MÉDIA(H63;L63;P63;T63;X63)
-// em ranges rígidos) e destrutivo (clearFormat/clearDataValidations/clearNote
-// em toda A66:NT89).
-//
-// Agora:
-//   • Lê datas reais da row 1 e agrupa programas por semana (Seg-Sex) e mês.
-//   • Gera labels e fórmulas dinâmicas que referenciam as colunas reais.
-//   • Limpa F66:NT89 para varrer polução lateral (gráfico legado, média semanal
-//     espalhada em F66:NT67).
-//   • Preserva formatação, validações e notas.
-//   • Preserva D85:D89 por NOME DE MÊS (não por posição) — sobrevive a shifts
-//     mensais do painel.
-//
-// Layout final:
-//   Row 66:    SEMANA ATUAL (do programa mais recente, Seg→data mais recente)
-//   Rows 67-84: últimas 18 semanas (Seg-Sex), mais recente primeiro
-//   Row 84 D:  header "MENSAL" (etiqueta do bloco abaixo)
-//   Rows 85-89: mês atual + últimos 4 meses anteriores
-//
-// Colunas:
-//   A: label dinâmico (datas ou nome do mês)
-//   B: média (=SEERRO(MÉDIA(refs);0))
-//   C: variação % vs linha abaixo (semanas e meses)
-//   D: refs mensais comparativas em D85:D89 (preservadas ou padrão JAN-MAIO);
-//      header "MENSAL" em D84
-//   E: diferença (B/D)-1 em E85:E89 (variação da média vs referência mensal)
+// O painel cresce 1 linha por semana e 1 por mês, então NENHUMA linha pode ser
+// fixa. Retorna:
+//   rowSemana   = linha do "SEM. ATUAL (dd/MM-dd/MM)"
+//   semanaLabel = texto desse label
+//   rowMesAtual = linha do "<MÊS> (mês atual)"
+//   mesLabel    = texto desse label
+//   panelEnd    = última linha do painel — sentinela "-%" na coluna C
+//                 (acompanha o mês mais antigo); fallback: rowMesAtual+5 ou 94
 // -----------------------------------------------------------------------------
-function preencherBlocoA66E85HistoricoGE_(sheet) {
-    // --- 0. Preservar valores existentes em D85:D89 (refs mensais comparativas) ---
-    //     Mapear {nome do mês → valor} para sobreviver a shifts mensais do painel
-    //     (quando o mês corrente muda, as posições deslocam, mas os valores
-    //     devem seguir o mês, não a posição). Só preserva valores numéricos
-    //     — ignora textos legados como "MENSAL" que ficavam em D85.
-    var oldA85_89 = sheet.getRange("A85:A89").getValues();
-    var oldD85_89 = sheet.getRange("D85:D89").getValues();
-    var preservedByMonth = {};
-    for (var pi = 0; pi < 5; pi++) {
-        var oldLabel = (oldA85_89[pi][0] || "").toString().trim();
-        var oldValue = oldD85_89[pi][0];
-        if (typeof oldValue !== "number") continue;
-        // Extrair nome do mês (remove sufixo " (mês atual)" se presente)
-        var monthName = oldLabel.replace(/\s*\(.*\)\s*$/, "").trim().toUpperCase();
-        if (monthName) preservedByMonth[monthName] = oldValue;
+function localizarPainelGE_(sheet) {
+    var lastRow = Math.max(sheet.getLastRow(), 94);
+    var n = lastRow - 66 + 1;
+    if (n < 1) return null;
+
+    var aVals = sheet.getRange(66, 1, n, 1).getValues();
+    var cVals = sheet.getRange(66, 3, n, 1).getValues();
+
+    var p = { rowSemana: -1, semanaLabel: "", rowMesAtual: -1, mesLabel: "", panelEnd: -1 };
+    for (var i = 0; i < n; i++) {
+        var s = (aVals[i][0] || "").toString();
+        if (p.rowSemana < 0 && s.indexOf("SEM. ATUAL") === 0) {
+            p.rowSemana = 66 + i;
+            p.semanaLabel = s;
+        }
+        if (p.rowMesAtual < 0 && s.indexOf("(mês atual)") >= 0) {
+            p.rowMesAtual = 66 + i;
+            p.mesLabel = s;
+        }
+        var c = (cVals[i][0] || "").toString().trim();
+        if (c === "-%") p.panelEnd = Math.max(p.panelEnd, 66 + i);
+    }
+    if (p.panelEnd < 0) {
+        p.panelEnd = p.rowMesAtual > 0 ? p.rowMesAtual + 5 : 94;
+    }
+    return p;
+}
+
+// =============================================================================
+// restaurarBlocoMensalAposInsercaoGE_ — devolve o bloco MENSAL de H:I para D:E
+// =============================================================================
+// insertColumns(4, 4) empurra para a direita TUDO da coluna D — inclusive o
+// bloco mensal do painel ("MENSAL", refs manuais 0,66/0,65/... e =(B/D)-1),
+// que para em H:I. Esta função devolve esse conteúdo para D:E (reescrevendo as
+// fórmulas para apontar de volta a D) e limpa H:I na faixa do painel. Deve ser
+// chamada IMEDIATAMENTE após a inserção de colunas, antes de qualquer outra
+// escrita. FIM DINÂMICO: o painel cresce 1 linha por semana e 1 por mês, então
+// a varredura vai da linha 66 até a última linha da planilha (mínimo 94).
+// -----------------------------------------------------------------------------
+function restaurarBlocoMensalAposInsercaoGE_(sheet) {
+    var FIRST = 66;
+    var LAST = Math.max(94, sheet.getLastRow());
+    var n = LAST - FIRST + 1;
+    var srcRange = sheet.getRange(FIRST, 8, n, 2); // H66:I{fim}
+    var vals = srcRange.getValues();
+    var fxs = srcRange.getFormulas();
+
+    var hasContent = false;
+    for (var i = 0; i < n; i++) {
+        if ((vals[i][0] !== "" && vals[i][0] != null) ||
+            (vals[i][1] !== "" && vals[i][1] != null) ||
+            fxs[i][0] !== "" || fxs[i][1] !== "") { hasContent = true; break; }
+    }
+    if (!hasContent) return 0;
+
+    // Formatos (negrito do MENSAL, 0.00 dos valores, % das diferenças)
+    srcRange.copyTo(sheet.getRange(FIRST, 4, n, 2),
+        SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
+
+    var moved = 0;
+    for (var k = 0; k < n; k++) {
+        var r = FIRST + k;
+
+        // Coluna H -> D
+        if (fxs[k][0]) {
+            sheet.getRange(r, 4).setFormula(
+                fxs[k][0].replace(new RegExp("\\bH" + r + "\\b", "g"), "D" + r));
+            moved++;
+        } else if (vals[k][0] !== "" && vals[k][0] != null) {
+            sheet.getRange(r, 4).setValue(vals[k][0]);
+            moved++;
+        }
+
+        // Coluna I -> E (ex.: "=(B89/H89)-1" volta a ser "=(B89/D89)-1")
+        if (fxs[k][1]) {
+            sheet.getRange(r, 5).setFormula(
+                fxs[k][1].replace(new RegExp("\\bH" + r + "\\b", "g"), "D" + r));
+            moved++;
+        } else if (vals[k][1] !== "" && vals[k][1] != null) {
+            sheet.getRange(r, 5).setValue(vals[k][1]);
+            moved++;
+        }
     }
 
-    // --- 1. Limpar APENAS conteúdo das áreas que vamos regenerar ---
-    //     Não usar clearFormat/clearDataValidations/clearNote — preserva customizações.
-    sheet.getRange("A66:E89").clearContent();
+    srcRange.clearContent();
+    srcRange.clearFormat();
+    Logger.log("[Painel] Bloco mensal devolvido de H:I para D:E (" + moved + " células).");
+    return moved;
+}
 
-    // --- 2. Limpar polução lateral em F66:NT89 (resíduos do gráfico legado e
-    //         de versões antigas de atualizarMediaSemanaGE_ que escreviam em
-    //         F66:NT67) ---
-    var lastCol = sheet.getLastColumn();
-    if (lastCol > 5) {
-        sheet.getRange(66, 6, 24, lastCol - 5).clearContent();
-    }
-
-    // --- 3. Coletar programas reais (col, data) ---
-    var audCols = getAudColsGE_(sheet);
-    if (audCols.length === 0) {
-        // Sem programas: deixar painel vazio
-        return;
-    }
+// =============================================================================
+// gerarFormulaMedianaOffsetGE_ — mediana do mesmo dia da semana (padrão OFFSET)
+// =============================================================================
+// Reproduz o padrão da planilha para E63 do novo bloco:
+//   =(MEDIAN(OFFSET(X63,0,0,1,1),OFFSET(X63,0,20),OFFSET(X63,0,40),...))
+// Âncora = coluna de AUDIÊNCIA mais recente com o MESMO dia da semana do novo
+// programa; passo de 20 colunas = 5 programas = 1 semana (o programa vai ao ar
+// seg-sex SEM exceção, então o passo nunca desalinha). O número de termos
+// replica o da fórmula do bloco anterior (I63, já deslocada), fallback 14.
+// Retorna a fórmula em sintaxe en-US (para Range.setFormula nativo, que é
+// independente de locale) ou null se não houver âncora.
+// -----------------------------------------------------------------------------
+function gerarFormulaMedianaOffsetGE_(sheet, programDate) {
+    var audColsHist = getAudColsGE_(sheet).filter(function(c) { return c !== 4; });
+    if (audColsHist.length === 0) return null;
 
     var row1Vals = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-    var programas = [];
-    for (var i = 0; i < audCols.length; i++) {
-        var c = audCols[i];
+    var weekday = programDate.getDay();
+
+    var anchorCol = null;
+    for (var i = 0; i < audColsHist.length; i++) { // newest-first
+        var c = audColsHist[i];
         var v = row1Vals[c - 1];
-        var dParsed = v instanceof Date ? v : parseDateStr_(typeof v === "string" ? v.trim() : "");
-        if (dParsed) programas.push({ col: c, date: dParsed });
+        var d = v instanceof Date ? v
+            : parseDateStr_(typeof v === "string" ? v.trim() : "");
+        if (d && d.getDay() === weekday) { anchorCol = c; break; }
     }
-    if (programas.length === 0) return;
-    programas.sort(function(a, b) { return b.date.getTime() - a.date.getTime(); });
+    if (!anchorCol) return null;
 
-    // --- 4. Helpers de agrupamento ---
-    function mondayOf(date) {
-        var d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-        var dow = d.getDay();
-        var diff = dow === 0 ? 6 : dow - 1;
-        d.setDate(d.getDate() - diff);
-        return d;
-    }
-    function weekKey(date) {
-        var m = mondayOf(date);
-        var mm = (m.getMonth() + 1) < 10 ? "0" + (m.getMonth() + 1) : (m.getMonth() + 1);
-        var dd = m.getDate() < 10 ? "0" + m.getDate() : m.getDate();
-        return m.getFullYear() + "-" + mm + "-" + dd;
-    }
-    function monthKey(date) {
-        var mm = (date.getMonth() + 1) < 10 ? "0" + (date.getMonth() + 1) : (date.getMonth() + 1);
-        return date.getFullYear() + "-" + mm;
+    // Nº de termos: replica o padrão do bloco anterior (fallback 14)
+    var nTerms = 14;
+    var prevF = sheet.getRange(63, 9).getFormula(); // I63 = mediana antiga deslocada
+    if (prevF && prevF.indexOf("OFFSET(") >= 0) {
+        var m = prevF.match(/OFFSET\(/g);
+        if (m && m.length >= 2) nTerms = m.length;
     }
 
-    // --- 5. Agrupar por semana e por mês ---
-    var semanasMap = {};
-    var mesesMap = {};
-    for (var k = 0; k < programas.length; k++) {
-        var p = programas[k];
-        var wk = weekKey(p.date);
-        if (!semanasMap[wk]) semanasMap[wk] = { startDate: mondayOf(p.date), cols: [] };
-        semanasMap[wk].cols.push(p.col);
+    // Não ultrapassar a última coluna histórica
+    var lastAud = audColsHist[audColsHist.length - 1];
+    var maxTerms = Math.floor((lastAud - anchorCol) / 20) + 1;
+    if (maxTerms < 1) maxTerms = 1;
+    if (nTerms > maxTerms) nTerms = maxTerms;
 
-        var mk = monthKey(p.date);
-        if (!mesesMap[mk]) mesesMap[mk] = { date: new Date(p.date.getFullYear(), p.date.getMonth(), 1), cols: [] };
-        mesesMap[mk].cols.push(p.col);
-    }
+    var aL = columnToLetter_(anchorCol);
+    var parts = ["OFFSET(" + aL + "63,0,0,1,1)"];
+    for (var k = 1; k < nTerms; k++) parts.push("OFFSET(" + aL + "63,0," + (20 * k) + ")");
+    return "=(MEDIAN(" + parts.join(",") + "))";
+}
 
-    var semanas = Object.keys(semanasMap).map(function(k) {
-        return { key: k, startDate: semanasMap[k].startDate, cols: semanasMap[k].cols };
-    });
-    semanas.sort(function(a, b) { return b.startDate.getTime() - a.startDate.getTime(); });
+// =============================================================================
+// preencherBlocoA66E85HistoricoGE_ — painel PRESERVADO + semana/mês automáticos
+// =============================================================================
+// O painel A66:E{fim} nunca é reconstruído — labels, fórmulas B/C/D/E, "-%",
+// refs mensais manuais e formatação ficam intactos (a inserção de colunas do
+// novo dia desloca as referências sozinha, e restaurarBlocoMensalAposInsercaoGE_
+// devolve o bloco mensal para D:E). Esta função faz apenas:
+//
+//   SEMANA — se o programa mais recente pertence à semana do label
+//   "SEM. ATUAL (dd/MM-dd/MM)": injeta D63 na fórmula de B. Se pertence a uma
+//   semana NOVA (toda segunda-feira, já que o programa vai ao ar seg-sex sem
+//   exceção): rebaixa o label para "dd/MM-dd/MM" (a média da semana fechada
+//   congela — as refs de coluna já acompanham as inserções de bloco), insere
+//   uma linha nova no topo da seção semanal e cria
+//   "SEM. ATUAL (novo intervalo)" com B=MÉDIA(D63) e C=variação vs semana
+//   anterior. Tudo abaixo (semanas antigas, MENSAL, meses, "-%") desce 1 linha
+//   com as fórmulas auto-ajustadas pelo Sheets.
+//
+//   MÊS — mesma mecânica: se o mês confere, injeta D63; se virou o mês
+//   (mesmo no meio da semana), rebaixa "<MÊS> (mês atual)" para "<MÊS>",
+//   insere linha nova com "<MÊS NOVO> (mês atual)", B=MÉDIA(D63), C=variação,
+//   D vazio (referência mensal manual — preencha quando tiver o consolidado
+//   Kantar) e E protegido contra D vazio (vira =(B/D)-1 assim que D for
+//   preenchido).
+//
+// Idempotente: reexecutar no mesmo dia não cria linha duplicada nem repete D63.
+// Fórmulas gravadas com Range.setFormula nativo (sintaxe en-US, independente
+// de locale — o par getFormula/setFormula é sempre en-US).
+// -----------------------------------------------------------------------------
+function preencherBlocoA66E85HistoricoGE_(sheet) {
+    var audCols = getAudColsGE_(sheet);
+    if (audCols.length === 0) return;
 
-    var meses = Object.keys(mesesMap).map(function(k) {
-        return { key: k, date: mesesMap[k].date, cols: mesesMap[k].cols };
-    });
-    meses.sort(function(a, b) { return b.date.getTime() - a.date.getTime(); });
-
-    // --- 6. Identificar semana e mês "atuais" (do programa mais recente) ---
-    var maisRecente = programas[0];
-    var semanaAtualKey = weekKey(maisRecente.date);
-    var mesAtualKey = monthKey(maisRecente.date);
-
-    var semanaAtual = null;
-    var semanasAnteriores = [];
-    for (var s = 0; s < semanas.length; s++) {
-        if (semanas[s].key === semanaAtualKey && !semanaAtual) semanaAtual = semanas[s];
-        else semanasAnteriores.push(semanas[s]);
-    }
-
-    var mesAtual = null;
-    var mesesAnteriores = [];
-    for (var m2 = 0; m2 < meses.length; m2++) {
-        if (meses[m2].key === mesAtualKey && !mesAtual) mesAtual = meses[m2];
-        else mesesAnteriores.push(meses[m2]);
-    }
+    var row1Vals = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    var v = row1Vals[audCols[0] - 1];
+    var maisRecente = v instanceof Date ? v
+        : parseDateStr_(typeof v === "string" ? v.trim() : "");
+    if (!maisRecente) return;
 
     var MONTH_NAMES_PT = ["JANEIRO", "FEVEREIRO", "MARÇO", "ABRIL", "MAIO", "JUNHO",
                           "JULHO", "AGOSTO", "SETEMBRO", "OUTUBRO", "NOVEMBRO", "DEZEMBRO"];
 
-    // --- 7. Montar matriz 24×5 (rows 66-89) ---
-    var labels = [];
-    var bFormulas = [];
-    var cFormulas = [];
-    var TOTAL = 24;
-    for (var rInit = 0; rInit < TOTAL; rInit++) {
-        labels.push([""]);
-        bFormulas.push([""]);
-        cFormulas.push([""]);
+    function mondayOf(d) {
+        var x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+        var dow = x.getDay();
+        x.setDate(x.getDate() - (dow === 0 ? 6 : dow - 1));
+        return x;
+    }
+    function ddmm(d) { return Utilities.formatDate(d, CFG.TIMEZONE, "dd/MM"); }
+    function labelSemanaAtual(mon) {
+        var fri = new Date(mon);
+        fri.setDate(fri.getDate() + 4);
+        return "SEM. ATUAL (" + ddmm(mon) + "-" + ddmm(fri) + ")";
+    }
+    function injetarD63(cell) {
+        var f = cell.getFormula(); // sempre en-US
+        if (!f) return false;
+        if (/\bD63\b/.test(f)) return false; // já incluído (reexecução)
+        var idx = f.indexOf("AVERAGE(");
+        if (idx < 0) return false;
+        cell.setFormula(f.slice(0, idx + 8) + "D63," + f.slice(idx + 8));
+        return true;
     }
 
-    function refs63(cols) {
-        return cols.map(function(c) { return columnToLetter_(c) + "63"; }).join(";");
-    }
-    function fmtRange(start) {
-        var fim = new Date(start);
-        fim.setDate(fim.getDate() + 4);
-        return Utilities.formatDate(start, CFG.TIMEZONE, "dd/MM") + "-" +
-               Utilities.formatDate(fim, CFG.TIMEZONE, "dd/MM");
+    var progMonday = mondayOf(maisRecente);
+    var painel = localizarPainelGE_(sheet);
+    if (!painel || painel.rowSemana < 0) {
+        Logger.log("[Painel] ⚠️ Linha 'SEM. ATUAL' não encontrada — painel não atualizado.");
+        return;
     }
 
-    // Row 0 (sheet 66): semana corrente
-    if (semanaAtual) {
-        labels[0][0] = "SEM. ATUAL (" + fmtRange(semanaAtual.startDate) + ")";
-        bFormulas[0][0] = "=SEERRO(MÉDIA(" + refs63(semanaAtual.cols) + ");0)";
-        cFormulas[0][0] = '=SE(OU(B67="";B67=0);"";(B66/B67)-1)';
+    // ───────────────────────── SEMANA ─────────────────────────
+    var mm = painel.semanaLabel.match(/\((\d{2}\/\d{2})-/);
+    var mesmaSemana = !!(mm && mm[1] === ddmm(progMonday));
+
+    if (mesmaSemana) {
+        if (injetarD63(sheet.getRange(painel.rowSemana, 2))) {
+            Logger.log("[Painel] D63 incluído na SEM. ATUAL (B" + painel.rowSemana + ").");
+        }
     } else {
-        labels[0][0] = "SEM. ATUAL";
+        var r = painel.rowSemana;
+        // 1) Rebaixa o label da semana que fechou: "SEM. ATUAL (08/06-12/06)" -> "08/06-12/06"
+        var labelFechada = painel.semanaLabel
+            .replace(/^SEM\. ATUAL\s*\(/, "").replace(/\)\s*$/, "").trim();
+        if (labelFechada) sheet.getRange(r, 1).setValue(labelFechada);
+        // 2) Insere a linha da nova semana no topo da seção semanal
+        sheet.insertRowsBefore(r, 1);
+        // 3) Formato herdado da linha de baixo (a ex-SEM. ATUAL)
+        sheet.getRange(r + 1, 1, 1, 5).copyTo(sheet.getRange(r, 1, 1, 5),
+            SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
+        // 4) Conteúdo da nova semana
+        sheet.getRange(r, 1).setValue(labelSemanaAtual(progMonday));
+        sheet.getRange(r, 2).setFormula("=AVERAGE(D63)");
+        sheet.getRange(r, 3).setFormula(
+            '=IF(OR(B' + (r + 1) + '="",B' + (r + 1) + '=0),"",(B' + r + '/B' + (r + 1) + ')-1)');
+        Logger.log("[Painel] Nova semana criada na linha " + r + ": " + labelSemanaAtual(progMonday));
+        // Tudo abaixo desceu 1 linha — relocaliza antes de mexer no mês
+        painel = localizarPainelGE_(sheet);
     }
 
-    // Rows 1-18 (sheet 67-84): últimas 18 semanas anteriores
-    for (var sa = 0; sa < Math.min(18, semanasAnteriores.length); sa++) {
-        var sm = semanasAnteriores[sa];
-        labels[1 + sa][0] = fmtRange(sm.startDate);
-        bFormulas[1 + sa][0] = "=SEERRO(MÉDIA(" + refs63(sm.cols) + ");0)";
-        if (sa < 17) {
-            var thisR = 66 + 1 + sa;
-            var nextR = thisR + 1;
-            cFormulas[1 + sa][0] = '=SE(OU(B' + nextR + '="";B' + nextR + '=0);"";(B' + thisR + '/B' + nextR + ')-1)';
+    // ───────────────────────── MÊS ─────────────────────────
+    if (!painel || painel.rowMesAtual < 0) {
+        Logger.log("[Painel] ⚠️ Linha '(mês atual)' não encontrada — bloco mensal não atualizado.");
+        return;
+    }
+
+    var nomeMesLabel = painel.mesLabel.replace(/\s*\(.*\)\s*$/, "").trim().toUpperCase();
+    var nomeMesProg = MONTH_NAMES_PT[maisRecente.getMonth()];
+
+    if (nomeMesLabel === nomeMesProg) {
+        if (injetarD63(sheet.getRange(painel.rowMesAtual, 2))) {
+            Logger.log("[Painel] D63 incluído no mês atual (B" + painel.rowMesAtual + ").");
         }
-    }
-
-    // Row 19 (sheet 85): mês corrente
-    if (mesAtual) {
-        labels[19][0] = MONTH_NAMES_PT[mesAtual.date.getMonth()] + " (mês atual)";
-        bFormulas[19][0] = "=SEERRO(MÉDIA(" + refs63(mesAtual.cols) + ");0)";
-        cFormulas[19][0] = '=SE(OU(B86="";B86=0);"";(B85/B86)-1)';
     } else {
-        labels[19][0] = "MÊS ATUAL";
+        var rm = painel.rowMesAtual;
+        // 1) Rebaixa o label do mês que fechou: "JUNHO (mês atual)" -> "JUNHO"
+        sheet.getRange(rm, 1).setValue(nomeMesLabel);
+        // 2) Insere a linha do novo mês no topo da seção mensal
+        //    (o header "MENSAL" em D fica na linha acima e não se move)
+        sheet.insertRowsBefore(rm, 1);
+        // 3) Formato herdado da linha de baixo (o ex-mês atual)
+        sheet.getRange(rm + 1, 1, 1, 5).copyTo(sheet.getRange(rm, 1, 1, 5),
+            SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
+        // 4) Conteúdo do novo mês
+        sheet.getRange(rm, 1).setValue(nomeMesProg + " (mês atual)");
+        sheet.getRange(rm, 2).setFormula("=AVERAGE(D63)");
+        sheet.getRange(rm, 3).setFormula(
+            '=IF(OR(B' + (rm + 1) + '="",B' + (rm + 1) + '=0),"",(B' + rm + '/B' + (rm + 1) + ')-1)');
+        // D fica vazio: é a referência mensal MANUAL (consolidado Kantar).
+        // E protegido: vazio enquanto D estiver vazio; vira (B/D)-1 ao preencher.
+        sheet.getRange(rm, 5).setFormula(
+            '=IF(OR(D' + rm + '="",D' + rm + '=0),"",(B' + rm + '/D' + rm + ')-1)');
+        Logger.log("[Painel] Novo mês criado na linha " + rm + ": " + nomeMesProg +
+            " — preencha a referência mensal em D" + rm + " quando disponível.");
     }
-
-    // Rows 20-23 (sheet 86-89): últimos 4 meses anteriores
-    for (var mp = 0; mp < Math.min(4, mesesAnteriores.length); mp++) {
-        var mn = mesesAnteriores[mp];
-        labels[20 + mp][0] = MONTH_NAMES_PT[mn.date.getMonth()];
-        bFormulas[20 + mp][0] = "=SEERRO(MÉDIA(" + refs63(mn.cols) + ");0)";
-        if (mp < 3) {
-            var thisM = 86 + mp;
-            var nextM = thisM + 1;
-            cFormulas[20 + mp][0] = '=SE(OU(B' + nextM + '="";B' + nextM + '=0);"";(B' + thisM + '/B' + nextM + ')-1)';
-        }
-    }
-
-    // --- 8. Aplicar valores e fórmulas (sem clearFormat) ---
-    sheet.getRange("A66:A89").setValues(labels);
-
-    // Aplicar fórmulas B (filtra strings vazias para evitar #ERROR! em células sem cálculo)
-    var bRange = sheet.getRange("B66:B89");
-    var bValuesFinal = [];
-    for (var bi = 0; bi < bFormulas.length; bi++) {
-        bValuesFinal.push([bFormulas[bi][0] === "" ? "" : bFormulas[bi][0]]);
-    }
-    bRange.setValues(bValuesFinal);
-
-    var cRange = sheet.getRange("C66:C89");
-    var cValuesFinal = [];
-    for (var ci = 0; ci < cFormulas.length; ci++) {
-        cValuesFinal.push([cFormulas[ci][0] === "" ? "" : cFormulas[ci][0]]);
-    }
-    cRange.setValues(cValuesFinal);
-
-    // D84: header "MENSAL" (label estático, fora da área de dados mensais)
-    sheet.getRange("D84").setValue("MENSAL");
-
-    // D85:D89: refs mensais comparativas
-    //   Prioridade por linha: (1) valor preservado por NOME DO MÊS, (2) padrão
-    //   do modelo para meses conhecidos (JAN-MAIO), (3) vazio.
-    // E85:E89: diferença (B/D)-1 entre média calculada e referência mensal.
-    var MONTHLY_DEFAULTS = {
-        "JANEIRO": 0.56,
-        "FEVEREIRO": 0.63,
-        "MARÇO": 0.71,
-        "ABRIL": 0.70,
-        "MAIO": 0.65
-    };
-    var dValues = [];
-    var eFormulas = [];
-    for (var mr = 0; mr < 5; mr++) {
-        var labelIdx = 19 + mr; // labels[19] = row 85, ..., labels[23] = row 89
-        var labelStr = (labels[labelIdx][0] || "").toString();
-        var monthName = labelStr.replace(/\s*\(.*\)\s*$/, "").trim().toUpperCase();
-        var dv = "";
-        if (monthName) {
-            if (preservedByMonth.hasOwnProperty(monthName)) {
-                dv = preservedByMonth[monthName];
-            } else if (MONTHLY_DEFAULTS.hasOwnProperty(monthName)) {
-                dv = MONTHLY_DEFAULTS[monthName];
-            }
-        }
-        dValues.push([dv]);
-        var rNum = 85 + mr;
-        eFormulas.push(['=SE(OU(D' + rNum + '="";D' + rNum + '=0);"";(B' + rNum + '/D' + rNum + ')-1)']);
-    }
-    sheet.getRange("D85:D89").setValues(dValues);
-    sheet.getRange("E85:E89").setValues(eFormulas);
-
-    // --- 9. Formatação numérica (sem destruir formatação base existente) ---
-    sheet.getRange("B66:B89").setNumberFormat("0.00");
-    sheet.getRange("C66:C89").setNumberFormat("+0.0%;-0.0%");
-    sheet.getRange("D85:D89").setNumberFormat("0.00");
-    sheet.getRange("E85:E89").setNumberFormat("+0.0%;-0.0%");
-    sheet.getRange("A66:A89").setHorizontalAlignment("left").setFontWeight("bold");
-    sheet.getRange("B66:E89").setHorizontalAlignment("center");
-
-    Logger.log("[Painel A66:E89] Reconstruído dinamicamente: " +
-        (semanaAtual ? 1 : 0) + " sem atual + " +
-        Math.min(18, semanasAnteriores.length) + " sem anteriores + " +
-        (mesAtual ? 1 : 0) + " mês atual + " +
-        Math.min(4, mesesAnteriores.length) + " meses anteriores. " +
-        "Polução em F66:NT89 limpa.");
 }
 
 // --- Média por semana GE ---
@@ -633,27 +661,23 @@ function atualizarMediaSemanaGE_() {
 
 // --- Gráfico de médias GE ---
 //
-// REESCRITO. Antes usava DATA_START_ROW = 70, escrevendo 60 linhas de dados
-// auxiliares em A70:D130 — DENTRO da área protegida A66:NT89.
-//
-// Agora DATA_START_ROW = 95 (fora da área protegida). A função limpa
-// preventivamente:
-//   • o gap A90:D94 entre o painel e a área auxiliar (cobre resíduo legado
-//     de versões antigas que escreviam até a row 130);
-//   • a nova área A95:D155 (onde os dados serão escritos).
-//
-// IMPORTANTE: a função NUNCA toca rows 70-89 — está dentro do painel
-// A66:NT89 mantido por preencherBlocoA66E85HistoricoGE_.
+// REESCRITO. A versão anterior escrevia cabeçalho + 60 linhas de dados
+// auxiliares em A95:D155 e limpava A90:D94 — mas no layout correto do painel
+// as linhas logo abaixo do mês atual são os meses anteriores, e NADA deve
+// existir abaixo do fim do painel. Agora o gráfico é alimentado DIRETAMENTE
+// pelas colunas existentes (A=hora, B=média histórica, D=programa mais
+// recente), sem área auxiliar. A limpeza de resíduos legados respeita o FIM
+// DINÂMICO do painel (sentinela "-%" na coluna C, que acompanha o mês mais
+// antigo): como o painel cresce 1 linha por semana e 1 por mês, limpar a
+// partir de uma linha fixa destruiria o painel no futuro.
 // -----------------------------------------------------------------------------
 function atualizarGraficoMediasGE_() {
     SpreadsheetApp.flush();
-    Utilities.sleep(1000);
+    Utilities.sleep(500);
     var sheet = SpreadsheetApp.getActive().getSheetByName(CFG.GE_OUT_HISTORICO);
     if (!sheet) return;
 
-    // FIX: usar detecção baseada em data (exclui colunas CALIBRAGEM)
     var audCols = getAudColsGE_(sheet);
-    var numPrograms = audCols.length;
 
     var charts = sheet.getCharts();
     for (var i = 0; i < charts.length; i++) {
@@ -662,60 +686,17 @@ function atualizarGraficoMediasGE_() {
             sheet.removeChart(charts[i]);
         }
     }
-    if (numPrograms === 0) return;
 
-    // Série 3: média da semana vigente (Seg→hoje)
-    var hoje = new Date();
-    var dow = hoje.getDay(); // 0=Dom, 1=Seg, ..., 6=Sab
-    var segundaDate = new Date(hoje);
-    segundaDate.setDate(hoje.getDate() - (dow === 0 ? 6 : dow - 1));
-    segundaDate.setHours(0, 0, 0, 0);
-    var hojeEnd = new Date(hoje);
-    hojeEnd.setHours(23, 59, 59, 999);
-
-    var colsSemana = audCols.filter(function(c) {
-        var val = sheet.getRange(1, c).getValue();
-        var d = val instanceof Date ? val : parseDateStr_(val);
-        if (!d) return false;
-        var dn = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-        return dn >= segundaDate && dn <= hojeEnd;
-    });
-
-    var numSeries = colsSemana.length > 0 ? 4 : 3;
-
-    // FIX CRÍTICO: row de início = 95, fora da área protegida A66:NT89.
-    var DATA_START_ROW = 95;
-
-    // Limpeza preventiva APENAS FORA da área protegida A66:NT89.
-    // NÃO tocar A70:D89: está dentro do painel semanal/mensal recém-construído
-    // por preencherBlocoA66E85HistoricoGE_ — limpar aqui destruiria o painel.
-    // O gap entre o painel e a nova área auxiliar (A90:D94) cobre eventual
-    // resíduo de versões antigas (que escreviam até row 130 a partir de row 70).
-    // A nova área (A95:D155) é coberta pela limpeza imediatamente abaixo.
-    sheet.getRange(90, 1, 5, 4).clearContent(); // A90:D94 (gap fora da área protegida)
-    // Limpar área NOVA (A95:D155) preventivamente
-    sheet.getRange(DATA_START_ROW, 1, 62, 4).clearContent();
-
-    var headerRow = [["HORA", "MÉDIA HISTÓRICA", "ÚLTIMO PROGRAMA"]];
-    if (colsSemana.length > 0) headerRow[0].push("MÉDIA SEMANA");
-    sheet.getRange(DATA_START_ROW, 1, 1, numSeries).setValues(headerRow);
-
-    var graphFormulas = [];
-    for (var row = 3; row <= 62; row++) {
-        var rowF = ["=A" + row, "=B" + row, "=D" + row];
-        if (colsSemana.length > 0) {
-            var parts = colsSemana.map(function(c) { return columnToLetter_(c) + row; }).join(";");
-            rowF.push("=MÉDIA(" + parts + ")");
-        }
-        graphFormulas.push(rowF);
+    // Limpeza de resíduos legados — SOMENTE abaixo do fim real do painel.
+    var painel = localizarPainelGE_(sheet);
+    var panelEnd = painel ? painel.panelEnd : 94;
+    var maxRows = sheet.getMaxRows();
+    if (maxRows > panelEnd) {
+        sheet.getRange(panelEnd + 1, 1, maxRows - panelEnd, 4).clearContent();
     }
-    batchSetFormulasSafe_(sheet.getRange(DATA_START_ROW + 1, 1, 60, numSeries), graphFormulas);
-    sheet.getRange(DATA_START_ROW + 1, 2, 60, numSeries - 1).setNumberFormat("0.00");
 
-    SpreadsheetApp.flush();
-    Utilities.sleep(500);
+    if (audCols.length === 0) return;
 
-    // FIX: data salva como string "dd/MM/yyyy" — usar fallback de string
     var lastDate = sheet.getRange(1, 4).getValue();
     var dateStr = "";
     if (lastDate instanceof Date) {
@@ -724,31 +705,21 @@ function atualizarGraficoMediasGE_() {
         dateStr = lastDate.trim();
     }
 
-    // FIX: cores corretas — vermelho=histórica, azul=último
-    var seriesOptions = {
-        0: { color: "#E74C3C", lineWidth: 3 },  // MÉDIA HISTÓRICA = vermelho
-        1: { color: "#2980B9", lineWidth: 2 }   // ÚLTIMO PROGRAMA = azul
-    };
-    if (colsSemana.length > 0) {
-        seriesOptions[2] = { color: "#27AE60", lineWidth: 2, lineDashStyle: "SHORT_DASH" };
-    }
-
-    var chartBuilder = sheet.newChart()
+    var chart = sheet.newChart()
         .asLineChart()
-        .addRange(sheet.getRange(DATA_START_ROW, 1, 61, 1))
-        .addRange(sheet.getRange(DATA_START_ROW, 2, 61, 1))
-        .addRange(sheet.getRange(DATA_START_ROW, 3, 61, 1));
-    if (colsSemana.length > 0) {
-        chartBuilder.addRange(sheet.getRange(DATA_START_ROW, 4, 61, 1));
-    }
-    var chart = chartBuilder
+        .addRange(sheet.getRange(2, 1, 61, 1))  // A2:A62 — HORA (rótulos)
+        .addRange(sheet.getRange(2, 2, 61, 1))  // B2:B62 — MÉDIA histórica
+        .addRange(sheet.getRange(2, 4, 61, 1))  // D2:D62 — programa mais recente
         .setPosition(2, 9, 0, 0)
         .setOption("title", "Média Histórica vs Último" + (dateStr ? " (" + dateStr + ")" : ""))
         .setOption("titleTextStyle", { fontSize: 12, bold: true })
         .setOption("legend", { position: "bottom" })
         .setOption("hAxis", { title: "Horário", slantedText: true, slantedTextAngle: 45 })
         .setOption("vAxis", { title: "Audiência" })
-        .setOption("series", seriesOptions)
+        .setOption("series", {
+            0: { color: "#E74C3C", lineWidth: 3 },  // MÉDIA HISTÓRICA
+            1: { color: "#2980B9", lineWidth: 2 }   // ÚLTIMO PROGRAMA
+        })
         .setOption("width", 800)
         .setOption("height", 400)
         .build();
@@ -1560,15 +1531,17 @@ function atualizarCalibragemGE() {
 // adicionarNovoDiaManualGE — REORGANIZADO (entrada pública via menu)
 // =============================================================================
 //
-// Nova ordem de execução:
-//   1. Inserir bloco D:G vazio
-//   2. atualizarFormulasBaseGE_ (apenas B/C/row 63/share — SEM calibragem)
-//   3. Aplicar fórmula de share em E
-//   4. gerarPrevisaoInicialGE_ — preenche D3:D62 com modelo isolado
-//   5. atualizarCalibragemGE_ + atualizarFatorTemaGE_ — agora com D preenchido
-//   6. Bloco row 63-65 (mediana, comentaristas, diferença)
-//   7. Formatação condicional herdada
-//   8. Atualizar dashboards
+// Ordem de execução:
+//   1.  Inserir bloco D:G vazio
+//   1b. Devolver o bloco mensal (que a inserção empurrou para H:I) para D:E
+//   2.  atualizarFormulasBaseGE_ (apenas B/C/row 63/share — SEM calibragem)
+//   3.  Aplicar fórmula de share em E
+//   4.  gerarPrevisaoInicialGE_ — preenche D3:D62 com modelo isolado
+//   5.  atualizarCalibragemGE_ + atualizarFatorTemaGE_ — agora com D preenchido
+//   6.  Bloco row 63-65 (mediana padrão OFFSET, comentaristas, diferença)
+//   7.  Formatação condicional herdada
+//   8.  Atualizar dashboards (painel preservado: D63 injetado em semana/mês,
+//       com criação automática de nova semana às segundas e novo mês na virada)
 //
 // Isto elimina a circularidade GS×GY×HC que ocorria quando D estava vazio.
 // -----------------------------------------------------------------------------
@@ -1617,6 +1590,11 @@ function adicionarNovoDiaManualGE() {
     // ❶ Inserir bloco vazio D:G
     sheet.insertColumns(4, 4);
 
+    // ❶b FIX: a inserção empurra o bloco mensal do painel (D:E) para H:I.
+    //     Devolve para D:E ANTES de qualquer outra escrita — senão os valores
+    //     manuais 0,66/0,65/... e o label MENSAL se perdem.
+    restaurarBlocoMensalAposInsercaoGE_(sheet);
+
     var bgColor = (numProgramsBefore % 2 === 0) ? "#FDF2F2" : "#FFFFFF";
 
     sheet.getRange(1, 4, 1, 4).merge();
@@ -1661,18 +1639,13 @@ function adicionarNovoDiaManualGE() {
     Utilities.sleep(800);
 
     // ❺ Agora SIM chamamos calibragem (D preenchido com previsão → GT-GY válidos)
-    //    Atenção arquitetural: com D contendo previsão, GT=D/GS produzirá valores
-    //    consistentes com a previsão. Quando dados reais começarem a entrar em
-    //    D ao vivo (sobrescrevendo célula a célula), GT-GY automaticamente
-    //    passam a refletir os dados reais — sem mudança estrutural necessária.
     atualizarCalibragemGE_(sheet);
     atualizarFatorTemaGE_(sheet);
     Utilities.sleep(500);
 
-    // ❻ Bloco row 63-65: espelha bloco anterior H63:K65, define labels, mediana
+    // ❻ Bloco row 63-65: espelha formato do bloco anterior H63:K65, labels, mediana
     sheet.getRange(63, 8, 3, 4).copyTo(sheet.getRange(63, 4, 3, 4), SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
 
-    // Textos fixos do bloco novo
     sheet.getRange(64, 4, 2, 1).setValues([["COMENTARISTA 1"], ["COMENTARISTA 2"]]);
     sheet.getRange(64, 6).setValue("DIFERENÇA");
 
@@ -1686,23 +1659,19 @@ function adicionarNovoDiaManualGE() {
     }[weekday] || "MEDIANA";
     sheet.getRange(64, 5).setValue(medianaLabel);
 
-    var audColsForMedian = getAudColsGE_(sheet).filter(function(c) { return c !== 4; });
-    var row1Values = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-    var medianRefs = [];
-    for (var iMedian = 0; iMedian < audColsForMedian.length; iMedian++) {
-        var cMedian = audColsForMedian[iMedian];
-        var h = row1Values[cMedian - 1];
-        var dMedian = h instanceof Date ? h : parseDateStr_(h);
-        if (!dMedian) continue;
-        if (dMedian.getDay() === weekday) medianRefs.push(columnToLetter_(cMedian) + "63");
-    }
-    if (medianRefs.length > 0) {
-        setFormulaSafe_(sheet.getRange(63, 5), "=MED(" + medianRefs.join(";") + ")");
+    // FIX: mediana no padrão OFFSET da planilha —
+    //   =(MEDIAN(OFFSET(X63,0,0,1,1),OFFSET(X63,0,20),...)) com 14 termos,
+    // ancorada na coluna do mesmo dia da semana mais recente. Gravada com
+    // Range.setFormula nativo (sintaxe en-US, independente do locale).
+    var medianaFormula = gerarFormulaMedianaOffsetGE_(sheet, programDate);
+    if (medianaFormula) {
+        sheet.getRange(63, 5).setFormula(medianaFormula);
     } else {
         sheet.getRange(63, 5).setValue("");
     }
     setFormulaSafe_(sheet.getRange(63, 6), "=(D63/E63)-1");
-    sheet.getRange(63, 6).setNumberFormat("+0.0%;-0.0%");
+    // FIX: NÃO forçar setNumberFormat em F63 — o formato (0.00%) já veio do
+    // copyTo PASTE_FORMAT do bloco anterior.
 
     // ❼ Herdar formatação condicional da coluna equivalente (&/MIN) do bloco anterior: I3:I62 -> E3:E62
     var rules = sheet.getConditionalFormatRules();
@@ -1729,7 +1698,8 @@ function adicionarNovoDiaManualGE() {
     }
     if (shouldUpdateRules) sheet.setConditionalFormatRules(clonedRules);
 
-    // ❽ Dashboards
+    // ❽ Dashboards (painel A66+ preservado — D63 injetado na semana/mês,
+    //    com criação automática de nova semana e novo mês quando virar)
     garantirCamposHistoricoGE_();
     atualizarMediaSemanaGE_();
     Utilities.sleep(1000);
@@ -1749,6 +1719,7 @@ function adicionarNovoDiaManualGE() {
         "Programa de " + dateStr + " inserido!\n\n" +
         msgPrev +
         "📈 Calibragem GS–GY recalculada\n" +
+        "📈 Painel semana/mês atualizado\n" +
         "📈 Gráfico atualizado\n\n" +
         "⚠️ Preencha:\n" +
         "• Linha 64 (col D): Comentarista 1\n" +
@@ -1780,4 +1751,73 @@ function atualizarMediaPorTemaSeExistir_() {
 function verEstruturaHistoricoGazeta() {
     const e = SpreadsheetApp.getUi();
     e.alert("\u{1f4ca} Estrutura do Hist\xf3rico GE", "\n\u{1f4ca} ESTRUTURA DA PLANILHA GE - HIST\xd3RICO\n\n\u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\n\u2502 Linha 1 \u2502     \u2502       \u2502        \u2502   17/01/2026    \u2502   16/01/2026    \u2502  ... \u2502\n\u251c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u2500\u2500\u2524\n\u2502 Linha 2 \u2502HORA \u2502 M\xc9DIA \u2502%A M\xc9DIA\u2502 AUD\u2502SHA\u2502TEMA\u2502TER\u2502 AUD\u2502SHA\u2502TEMA\u2502TER\u2502  ... \u2502\n\u251c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u2500\u2500\u2524\n\u2502 Linha 3 \u250218:00\u2502 0.45  \u2502 +2.3%  \u25020.46\u25021.2\u2502    \u2502   \u25020.44\u25021.1\u2502    \u2502   \u2502      \u2502\n\u2502 Linha 4 \u250218:01\u2502 0.47  \u2502 +1.4%  \u25020.48\u25021.3\u2502SPFC\u2502...\u25020.46\u25021.2\u2502PALM\u2502...\u2502      \u2502\n\u2502   ...   \u2502 ... \u2502  ...  \u2502  ...   \u2502 ...\u2502...\u2502 ...\u2502...\u2502 ...\u2502...\u2502 ...\u2502...\u2502      \u2502\n\u2502Linha 62 \u250218:59\u2502 0.55  \u2502 -0.5%  \u25020.54\u25021.5\u2502CORI\u2502...\u25020.56\u25021.6\u2502FLAM\u2502...\u2502      \u2502\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\n\nCOLUNAS FIXAS:\n\u2022 A: HORA (18:00 a 18:59)\n\u2022 B: M\xc9DIA de todas as audi\xeancias hist\xf3ricas daquele minuto\n\u2022 C: % A M\xc9DIA = (Audi\xeancia mais recente - M\xe9dia) / M\xe9dia\n\nBLOCOS DE 4 COLUNAS (por programa):\n\u2022 AUDI\xcaNCIA: valor em formato 0.00\n\u2022 SHARE: valor em formato 0.0\n\u2022 TEMA: tema classificado do minuto\n\u2022 TERMOS: top 5 termos do minuto\n\nCORES:\n\u2022 Cabe\xe7alhos: vermelho (#E74C3C) - tema do Gazeta\n\u2022 Programas: altern\xe2ncia vermelho claro / branco\n", e.ButtonSet.OK)
+}
+
+// =============================================================================
+// executarAtualizacaoHistoricoGECompleta — fluxo completo num clique
+// =============================================================================
+// Executa, na ordem correta:
+//   1. Atualizar Média por Tema (cria a aba se não existir)
+//   2. Adicionar Novo Dia (Manual) — pergunta a data
+//   3. Calibragem GS–GY + Fator Tema GZ–HC
+//   4. Instalar/Atualizar Projeção de Audiência
+// -----------------------------------------------------------------------------
+function executarAtualizacaoHistoricoGECompleta() {
+    var ui = SpreadsheetApp.getUi();
+    var ss = SpreadsheetApp.getActive();
+    var etapas = [];
+
+    try {
+        // 1) Média por Tema
+        if (ss.getSheetByName("GE - Média por Minuto TEMA")) {
+            atualizarFormulasTemaGE();
+        } else {
+            criarMediaPorTemaGE();
+        }
+        etapas.push("1. Média por Tema ✅");
+        SpreadsheetApp.flush();
+    } catch (e1) {
+        etapas.push("1. Média por Tema ❌ " + e1.message);
+        ui.alert("⚠️ Etapa 1 falhou", e1.message + "\n\nO fluxo foi interrompido.", ui.ButtonSet.OK);
+        return;
+    }
+
+    try {
+        // 2) Novo dia (pergunta a data via prompt interno)
+        adicionarNovoDiaManualGE();
+        etapas.push("2. Novo Dia ✅");
+        SpreadsheetApp.flush();
+    } catch (e2) {
+        etapas.push("2. Novo Dia ❌ " + e2.message);
+        ui.alert("⚠️ Etapa 2 falhou", e2.message + "\n\nO fluxo foi interrompido.", ui.ButtonSet.OK);
+        return;
+    }
+
+    try {
+        // 3) Calibragem + Fator Tema
+        var sheet = ss.getSheetByName(CFG.GE_OUT_HISTORICO);
+        if (sheet) {
+            atualizarCalibragemGE_(sheet);
+            atualizarFatorTemaGE_(sheet);
+        }
+        etapas.push("3. Calibragem ✅");
+        SpreadsheetApp.flush();
+    } catch (e3) {
+        etapas.push("3. Calibragem ❌ " + e3.message);
+    }
+
+    try {
+        // 4) Projeção
+        var res = instalarProjecaoAudienciaGE_();
+        if (res && res.ok) {
+            etapas.push("4. Projeção ✅ (" + res.escritas + " projetadas, " + res.preservadas + " reais preservados)");
+        } else {
+            etapas.push("4. Projeção ⚠️ " + ((res && res.msg) ? res.msg : "falhou"));
+        }
+        SpreadsheetApp.flush();
+    } catch (e4) {
+        etapas.push("4. Projeção ❌ " + e4.message);
+    }
+
+    ui.alert("📋 Atualização Completa GE - Histórico", etapas.join("\n"), ui.ButtonSet.OK);
 }
