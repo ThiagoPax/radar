@@ -115,3 +115,35 @@ function columnToLetter_(e) {
     }
     return t
 }
+
+// --- Fórmulas em células esparsas (não contíguas) em 1 chamada à Sheets API ---
+// Usado para gravar as fórmulas da linha 63 em cada coluna de AUDIÊNCIA
+// (D, H, L, P, ...) sem tocar nas colunas intermediárias (E, F, G, ...).
+// cells = [{ row: 63, col: 4, formula: "=(SOMA(D3:D62))/60" }, ...]
+function batchSetFormulasSparseSafe_(sheet, cells) {
+    if (!cells || cells.length === 0) return;
+    var ssId = sheet.getParent().getId();
+    var name = sheet.getName().replace(/'/g, "''");
+    var data = [];
+    for (var i = 0; i < cells.length; i++) {
+        var f = sanitizeFormula_(cells[i].formula);
+        if (f && f[0] !== "=") f = "=" + f;
+        data.push({
+            range: "'" + name + "'!" + sheet.getRange(cells[i].row, cells[i].col).getA1Notation(),
+            values: [[f || ""]]
+        });
+    }
+    var maxRetries = 5;
+    for (var attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+            Sheets.Spreadsheets.Values.batchUpdate({
+                valueInputOption: "USER_ENTERED",
+                data: data
+            }, ssId);
+            return;
+        } catch (e) {
+            if (attempt === maxRetries - 1) throw e;
+            Utilities.sleep(1000 * Math.pow(2, attempt));
+        }
+    }
+}
