@@ -64,6 +64,7 @@ function onOpen() {
         .addItem("🔄 Atualizar Calibragem (GS–GY)", "atualizarCalibragemGE")
         .addItem("🎯 Instalar/Atualizar Projeção de Audiência", "instalarProjecaoAudienciaGE")
         .addItem("➕🎯 Adicionar Novo Dia + Projeção", "arquivarEProjetarGE")
+        .addItem("🚀 Atualização Completa (Tema → Dia → Calibrar → Projeção)", "executarAtualizacaoHistoricoGECompleta")
     )
     .addSubMenu(
       ui.createMenu("📈 Análise por Tema")
