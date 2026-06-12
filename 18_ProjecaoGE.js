@@ -169,22 +169,31 @@ function instalarProjecaoAudienciaGE_() {
     var dFormulasExist = dRange.getFormulas(); // "" quando não é fórmula
     var escritas = 0, preservadas = 0;
 
+    // FIX QUOTA: a versão anterior chamava setFormulaSafe_ célula a célula
+    // (até 60 calls), estourando o limite "Write requests per minute" do
+    // Sheets API. Agora coletamos cada fórmula num array esparso e gravamos
+    // tudo em UMA chamada batchUpdate. Reais digitados continuam intocados.
+    var cellsParaProjetar = [];
+    var d3LimparTudo = false;
     for (var k = 0; k < nLinhas; k++) {
         var rowNum = PROJ_GE.FIRST_DATA_ROW + k;
         var val = dValues[k][0];
         var hasFormula = dFormulasExist[k][0] !== "" && dFormulasExist[k][0] != null;
         var typedReal = (!hasFormula && typeof val === "number" && val !== 0);
-
-        if (typedReal) { preservadas++; continue; } // mantém real digitado, intocado
-
-        var cell = sheet.getRange(rowNum, PROJ_GE.AUD_COL);
+        if (typedReal) { preservadas++; continue; }
         if (rowNum === PROJ_GE.FIRST_DATA_ROW) {
-            cell.clearContent(); // D3 sem real: aguarda digitação
+            d3LimparTudo = true; // D3 sem real: aguarda digitação
         } else {
-            setFormulaSafe_(cell, "=SE(D" + (rowNum - 1) + '="";"";' + Lproj + rowNum + ")");
+            cellsParaProjetar.push({
+                row: rowNum,
+                col: PROJ_GE.AUD_COL,
+                formula: "=SE(D" + (rowNum - 1) + '="";"";' + Lproj + rowNum + ")"
+            });
             escritas++;
         }
     }
+    if (d3LimparTudo) sheet.getRange(PROJ_GE.FIRST_DATA_ROW, PROJ_GE.AUD_COL).clearContent();
+    if (cellsParaProjetar.length > 0) batchSetFormulasSparseSafe_(sheet, cellsParaProjetar);
 
     SpreadsheetApp.flush();
 
